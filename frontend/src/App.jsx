@@ -18,6 +18,7 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [solicitacoes, setSolicitacoes] = useState([])
   const [painelAberto, setPainelAberto] = useState(false)
+  const [validarTeto, setValidarTeto] = useState(false)
   const listaRef = useRef(null)
   const inputRef = useRef(null)
 
@@ -50,7 +51,7 @@ export default function App() {
       const r = await fetch(`${API_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pergunta: q }),
+        body: JSON.stringify({ pergunta: q, validar_teto: validarTeto }),
       })
       const data = await r.json()
       setMensagens((m) => [
@@ -104,6 +105,8 @@ export default function App() {
         hasMessages={!vazio}
         onAbrirPainel={() => setPainelAberto(true)}
         totalSolicitacoes={solicitacoes.length}
+        validarTeto={validarTeto}
+        onToggleValidarTeto={() => setValidarTeto((v) => !v)}
       />
 
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col overflow-hidden px-4 sm:px-6">
@@ -138,7 +141,14 @@ export default function App() {
   )
 }
 
-function Header({ onReset, hasMessages, onAbrirPainel, totalSolicitacoes }) {
+function Header({
+  onReset,
+  hasMessages,
+  onAbrirPainel,
+  totalSolicitacoes,
+  validarTeto,
+  onToggleValidarTeto,
+}) {
   return (
     <header className="border-b border-slate-200/70 bg-white/70 backdrop-blur">
       <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-4 py-3 sm:px-6">
@@ -152,6 +162,27 @@ function Header({ onReset, hasMessages, onAbrirPainel, totalSolicitacoes }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onToggleValidarTeto}
+            role="switch"
+            aria-checked={validarTeto}
+            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+            title="Validar o saldo contra o teto da política"
+          >
+            <span
+              className={`relative h-4 w-7 rounded-full transition-colors ${
+                validarTeto ? 'bg-violet-500' : 'bg-slate-300'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
+                  validarTeto ? 'translate-x-3.5' : 'translate-x-0.5'
+                }`}
+              />
+            </span>
+            Validar política
+          </button>
           <button
             type="button"
             onClick={onAbrirPainel}

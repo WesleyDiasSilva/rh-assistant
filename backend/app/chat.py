@@ -33,7 +33,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel
 
 from app.schemas import Fonte, RespostaRH
-from app.tools import consultar_saldo_ferias, registrar_solicitacao_ferias
+from app.tools import (
+    alerta_teto,
+    consultar_saldo_ferias,
+    registrar_solicitacao_ferias,
+)
 
 
 FAKE_DATA_DIR = Path(__file__).resolve().parent.parent / "fake_data"
@@ -43,6 +47,9 @@ FAKE_DATA_DIR = Path(__file__).resolve().parent.parent / "fake_data"
 
 class ChatRequest(BaseModel):
     pergunta: str
+    # Quando ligado, o saldo consultado é validado contra o teto da política
+    # (a tool sinaliza inconsistências). Controlado pela UI.
+    validar_teto: bool = False
 
 
 # --- Carregamento dos documentos (stuffing) ---------------------------------
@@ -176,6 +183,12 @@ def responder(req: ChatRequest) -> RespostaRH:
             resultado = (
                 tool.invoke(call["args"]) if tool else "Ferramenta desconhecida"
             )
+            # Validação opcional do teto da política (controlada pela UI):
+            # o sistema sinaliza saldo acima do máximo, sem depender do modelo.
+            if req.validar_teto and call["name"] == "consultar_saldo_ferias":
+                alerta = alerta_teto(call["args"].get("funcionario", ""))
+                if alerta:
+                    resultado = f"{resultado} {alerta}"
             tool_messages.append(
                 ToolMessage(content=str(resultado), tool_call_id=call["id"])
             )

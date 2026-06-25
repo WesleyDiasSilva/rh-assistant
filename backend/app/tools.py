@@ -24,6 +24,31 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 SALDOS_PATH = BACKEND_DIR / "fake_data" / "saldos.json"
 SOLICITACOES_PATH = BACKEND_DIR / "solicitacoes.jsonl"
 
+# Máximo de dias de férias previsto na política. A regra de negócio mora aqui,
+# no código do sistema — não depende de o modelo "lembrar" da política.
+TETO_FERIAS = 30
+
+
+def _dados_saldo(funcionario: str) -> dict | None:
+    """Lê saldos.json e devolve os dados do funcionário, ou None se não existir."""
+    saldos = json.loads(SALDOS_PATH.read_text(encoding="utf-8"))
+    return saldos.get(funcionario)
+
+
+def alerta_teto(funcionario: str) -> str | None:
+    """Alerta se o saldo cadastrado do funcionário exceder o teto da política.
+
+    Retorna None se estiver dentro do teto ou se o funcionário não existir.
+    """
+    dados = _dados_saldo(funcionario)
+    if dados is None or dados["dias_disponiveis"] <= TETO_FERIAS:
+        return None
+    return (
+        f"Atenção: o cadastro indica {dados['dias_disponiveis']} dias para "
+        f"{funcionario}, mas o máximo previsto na política é {TETO_FERIAS} "
+        "dias. Trata-se de uma inconsistência cadastral — confirme com o RH."
+    )
+
 
 def listar_solicitacoes() -> list[dict]:
     """Lê solicitacoes.jsonl e devolve as solicitações, da mais recente para a
@@ -52,8 +77,7 @@ def consultar_saldo_ferias(funcionario: str) -> str:
     e devolve os dias disponíveis e os dias já usados. Se o funcionário não for
     encontrado, devolve "Funcionário não encontrado".
     """
-    saldos = json.loads(SALDOS_PATH.read_text(encoding="utf-8"))
-    dados = saldos.get(funcionario)
+    dados = _dados_saldo(funcionario)
     if dados is None:
         return "Funcionário não encontrado"
     return (
