@@ -22,3 +22,6 @@ dist/
 
 # Logs
 *.log
+
+# Dados gerados em runtime
+solicitacoes.jsonl

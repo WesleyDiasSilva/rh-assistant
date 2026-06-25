@@ -1,12 +1,12 @@
 """
-Chain de RH: prompt | model | parser.
+Chain de RH: prompt | model com saída estruturada.
 
 Responde a perguntas com base nas políticas internas de RH (LCEL):
 
 - prompt: ChatPromptTemplate com um system fixo (persona de RH + regra de
   só responder com base no contexto) e um human com {contexto} e {pergunta}.
-- model:  ChatAnthropic, claude-haiku-4-5, temperatura 0.
-- parser: StrOutputParser (devolve a resposta como string).
+- model:  ChatAnthropic, claude-haiku-4-5, temperatura 0, com saída
+  estruturada no schema RespostaRH (resposta, fontes, categoria, confianca).
 
 O contexto é o conteúdo das políticas em backend/fake_data/, injetado direto
 no prompt (são poucos documentos e cabem no contexto).
@@ -18,28 +18,19 @@ from __future__ import annotations
 from pathlib import Path
 
 from langchain_anthropic import ChatAnthropic
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel
+
+from app.schemas import Fonte, RespostaRH
 
 
 FAKE_DATA_DIR = Path(__file__).resolve().parent.parent / "fake_data"
 
 
-# --- Contrato da API (inalterado) -------------------------------------------
+# --- Contrato de entrada da API ---------------------------------------------
 
 class ChatRequest(BaseModel):
     pergunta: str
-
-
-class Fonte(BaseModel):
-    arquivo: str
-    titulo: str
-
-
-class ChatResponse(BaseModel):
-    resposta: str
-    fontes: list[Fonte]
 
 
 # --- Carregamento dos documentos (stuffing) ---------------------------------
@@ -66,17 +57,25 @@ CONTEXTO = "\n\n---\n\n".join(
     for arquivo, titulo, conteudo in DOCS
 )
 
-# Fontes = os documentos injetados no contexto (por ora, os 6).
+# Documentos disponíveis no contexto (por ora, os 6).
 FONTES = [Fonte(arquivo=arquivo, titulo=titulo) for arquivo, titulo, _ in DOCS]
 
 
-# --- Chain LCEL: prompt | model | parser ------------------------------------
+# --- Chain LCEL: prompt | model com saída estruturada -----------------------
 
 SYSTEM = (
     "Você é um assistente de RH. Responda de forma clara e objetiva, SOMENTE "
     "com base no contexto fornecido. Se a resposta não estiver no contexto, "
     "diga que não encontrou e sugira procurar o RH. Sempre cite de qual "
-    "política veio a informação."
+    "política veio a informação.\n\n"
+    "Preencha a resposta estruturada assim:\n"
+    "- fontes: apenas as políticas que você de fato usou para responder "
+    "(arquivo e titulo exatamente como aparecem no contexto). Se não usou "
+    "nenhuma, deixe a lista vazia.\n"
+    "- categoria: a categoria da pergunta (ferias, home-office, beneficios, "
+    "reembolso, horario, licencas ou outro).\n"
+    "- confianca: de 0 a 1, o quão confiante você está na resposta com base "
+    "no contexto."
 )
 
 prompt = ChatPromptTemplate.from_messages(
@@ -88,22 +87,22 @@ prompt = ChatPromptTemplate.from_messages(
 
 model = ChatAnthropic(model="claude-haiku-4-5", temperature=0)
 
-chain = prompt | model | StrOutputParser()
+chain = prompt | model.with_structured_output(RespostaRH)
 
 
 # --- Rota -------------------------------------------------------------------
 
-def responder(req: ChatRequest) -> ChatResponse:
+def responder(req: ChatRequest) -> RespostaRH:
     try:
-        resposta = chain.invoke({"contexto": CONTEXTO, "pergunta": req.pergunta})
+        return chain.invoke({"contexto": CONTEXTO, "pergunta": req.pergunta})
     except Exception as exc:  # ex.: sem ANTHROPIC_API_KEY, falha de rede/API
-        return ChatResponse(
+        return RespostaRH(
             resposta=(
                 "Não consegui consultar o assistente agora. Verifique se a "
                 "ANTHROPIC_API_KEY está configurada e tente novamente. "
                 f"(detalhe: {exc})"
             ),
             fontes=[],
+            categoria="outro",
+            confianca=0.0,
         )
-
-    return ChatResponse(resposta=resposta, fontes=FONTES)

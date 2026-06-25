@@ -3,6 +3,6 @@ uvicorn[standard]==0.34.0
 psycopg[binary]==3.2.3
 pydantic==2.10.4
 
-# Chain LangChain + Claude (Aula 1)
-langchain
-langchain-anthropic
+# Chain LangChain + Claude
+langchain>=1.0,<2.0
+langchain-anthropic>=1.0,<2.0

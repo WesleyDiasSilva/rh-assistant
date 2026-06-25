@@ -2,7 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import db
-from app.chat import ChatRequest, ChatResponse, responder
+from app.chat import ChatRequest, responder
+from app.schemas import RespostaRH
 
 app = FastAPI(title="rh-assistant", version="0.1.0")
 
@@ -24,6 +25,6 @@ def health():
     return {"status": "ok", "db": "ok" if db_ok else "error"}
 
 
-@app.post("/api/chat", response_model=ChatResponse)
-def chat(req: ChatRequest) -> ChatResponse:
+@app.post("/api/chat", response_model=RespostaRH)
+def chat(req: ChatRequest) -> RespostaRH:
     return responder(req)
