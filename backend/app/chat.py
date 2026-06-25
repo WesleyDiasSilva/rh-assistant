@@ -1,15 +1,25 @@
 """
-Chain de RH: prompt | model com saída estruturada.
+Chain de RH com tools e saída estruturada.
 
-Responde a perguntas com base nas políticas internas de RH (LCEL):
+A rota /api/chat funciona em duas etapas, porque tool calling e structured
+output não cabem na mesma chamada (ver nota abaixo):
 
-- prompt: ChatPromptTemplate com um system fixo (persona de RH + regra de
-  só responder com base no contexto) e um human com {contexto} e {pergunta}.
-- model:  ChatAnthropic, claude-haiku-4-5, temperatura 0, com saída
-  estruturada no schema RespostaRH (resposta, fontes, categoria, confianca).
+1. Decisão/execução (bind_tools): o modelo recebe a pergunta com as tools
+   plugadas e decide. Se não pedir tool, é pergunta de política. Se pedir
+   tool(s), o código as executa (lendo name/args de tool_calls) e devolve o
+   resultado ao modelo via ToolMessage.
+2. Formatação (with_structured_output): o modelo formula a resposta final
+   sempre no schema RespostaRH (resposta, fontes, categoria, confianca), para
+   o contrato da API ser o mesmo nos dois caminhos.
 
-O contexto é o conteúdo das políticas em backend/fake_data/, injetado direto
-no prompt (são poucos documentos e cabem no contexto).
+Nota sobre o encontro tool calling + structured output: with_structured_output
+já é implementado forçando uma tool call para o schema RespostaRH. Isso conflita
+com bind_tools na mesma chamada — o modelo seria forçado a "responder" e não
+poderia decidir por uma tool de negócio. Por isso separamos em duas etapas: a
+primeira decide/executa a tool; a segunda formata em RespostaRH.
+
+O contexto das políticas é o conteúdo dos .md em backend/fake_data/, injetado
+direto no prompt (são poucos documentos e cabem no contexto).
 
 Requer ANTHROPIC_API_KEY no ambiente (ver .env / docker-compose.yml).
 """
@@ -18,10 +28,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel
 
 from app.schemas import Fonte, RespostaRH
+from app.tools import consultar_saldo_ferias, registrar_solicitacao_ferias
 
 
 FAKE_DATA_DIR = Path(__file__).resolve().parent.parent / "fake_data"
@@ -61,7 +73,7 @@ CONTEXTO = "\n\n---\n\n".join(
 FONTES = [Fonte(arquivo=arquivo, titulo=titulo) for arquivo, titulo, _ in DOCS]
 
 
-# --- Chain LCEL: prompt | model com saída estruturada -----------------------
+# --- Modelo, tools e chains -------------------------------------------------
 
 SYSTEM = (
     "Você é um assistente de RH. Responda de forma clara e objetiva, SOMENTE "
@@ -78,6 +90,34 @@ SYSTEM = (
     "no contexto."
 )
 
+# Etapa 1: system que orienta o modelo a decidir entre tool e política.
+SYSTEM_DECISAO = (
+    "Você é um assistente de RH. Você tem ferramentas para consultar o saldo "
+    "de férias de um funcionário específico e para registrar solicitações de "
+    "férias. Use uma ferramenta quando a pergunta for sobre o saldo de um "
+    "funcionário nominal ou pedir para registrar/solicitar férias. Para "
+    "perguntas gerais sobre políticas de RH, responda normalmente, sem usar "
+    "ferramentas."
+)
+
+# Etapa 2 (caminho com tool): system que orienta a formatar a resposta final
+# a partir do resultado da(s) ferramenta(s).
+SYSTEM_FORMATA_TOOL = (
+    "Você é um assistente de RH. Use o resultado das ferramentas para formular "
+    "a resposta final ao usuário, de forma clara e objetiva.\n\n"
+    "Confirme apenas o que de fato aconteceu, com base no resultado da "
+    "ferramenta. Não prometa etapas futuras que o sistema não realiza: ao "
+    "registrar uma solicitação de férias, apenas confirme que ela foi "
+    "registrada (funcionário, dias e período). Não diga que o saldo será "
+    "verificado nem que a solicitação será processada ou aprovada.\n\n"
+    "Preencha a resposta estruturada assim:\n"
+    "- fontes: deixe a lista vazia (a informação veio de um sistema interno, "
+    "não de um documento de política).\n"
+    "- categoria: a categoria da pergunta (use 'ferias' para saldo ou "
+    "solicitação de férias).\n"
+    "- confianca: de 0 a 1, sua confiança na resposta."
+)
+
 prompt = ChatPromptTemplate.from_messages(
     [
         ("system", SYSTEM),
@@ -87,14 +127,54 @@ prompt = ChatPromptTemplate.from_messages(
 
 model = ChatAnthropic(model="claude-haiku-4-5", temperature=0)
 
-chain = prompt | model.with_structured_output(RespostaRH)
+# Etapa 1: modelo com as tools plugadas (decide se chama alguma).
+TOOLS = [consultar_saldo_ferias, registrar_solicitacao_ferias]
+TOOLS_POR_NOME = {t.name: t for t in TOOLS}
+model_com_tools = model.bind_tools(TOOLS)
+
+# Etapa 2: modelo que sempre devolve RespostaRH.
+model_estruturado = model.with_structured_output(RespostaRH)
+
+# Chain de política (sem tool): prompt com contexto | saída estruturada.
+chain = prompt | model_estruturado
 
 
 # --- Rota -------------------------------------------------------------------
 
 def responder(req: ChatRequest) -> RespostaRH:
     try:
-        return chain.invoke({"contexto": CONTEXTO, "pergunta": req.pergunta})
+        # Etapa 1: o modelo decide se usa alguma tool.
+        ai_msg = model_com_tools.invoke(
+            [
+                SystemMessage(content=SYSTEM_DECISAO),
+                HumanMessage(content=req.pergunta),
+            ]
+        )
+
+        # Sem tool → pergunta de política: fluxo de structured output existente.
+        if not ai_msg.tool_calls:
+            return chain.invoke({"contexto": CONTEXTO, "pergunta": req.pergunta})
+
+        # Com tool(s): o código executa cada uma e devolve via ToolMessage.
+        tool_messages: list[ToolMessage] = []
+        for call in ai_msg.tool_calls:
+            tool = TOOLS_POR_NOME.get(call["name"])
+            resultado = (
+                tool.invoke(call["args"]) if tool else "Ferramenta desconhecida"
+            )
+            tool_messages.append(
+                ToolMessage(content=str(resultado), tool_call_id=call["id"])
+            )
+
+        # Etapa 2: o modelo formula a resposta final como RespostaRH.
+        return model_estruturado.invoke(
+            [
+                SystemMessage(content=SYSTEM_FORMATA_TOOL),
+                HumanMessage(content=req.pergunta),
+                ai_msg,
+                *tool_messages,
+            ]
+        )
     except Exception as exc:  # ex.: sem ANTHROPIC_API_KEY, falha de rede/API
         return RespostaRH(
             resposta=(

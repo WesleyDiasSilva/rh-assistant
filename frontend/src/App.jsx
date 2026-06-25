@@ -44,6 +44,8 @@ export default function App() {
           autor: 'assistente',
           texto: data.resposta,
           fontes: data.fontes || [],
+          categoria: data.categoria,
+          confianca: data.confianca,
           ts: Date.now(),
         },
       ])
@@ -206,6 +208,9 @@ function Mensagem({ m }) {
         >
           <RenderTexto texto={m.texto} />
           {m.fontes && m.fontes.length > 0 && <Fontes fontes={m.fontes} />}
+          {!m.erro && (m.categoria || typeof m.confianca === 'number') && (
+            <MetaResposta categoria={m.categoria} confianca={m.confianca} />
+          )}
         </div>
       </div>
     </div>
@@ -249,6 +254,48 @@ function Fontes({ fontes }) {
           </span>
         ))}
       </div>
+    </div>
+  )
+}
+
+// "home-office" -> "Home office"
+function formatarCategoria(c) {
+  const texto = String(c).replace(/-/g, ' ').trim()
+  return texto.charAt(0).toUpperCase() + texto.slice(1)
+}
+
+function MetaResposta({ categoria, confianca }) {
+  const temConfianca = typeof confianca === 'number' && !Number.isNaN(confianca)
+  const pct = temConfianca ? Math.round(Math.max(0, Math.min(1, confianca)) * 100) : null
+  // Cor da barra por faixa de confiança (neutra, sem alarde).
+  const cor =
+    pct === null
+      ? 'bg-slate-300'
+      : pct >= 70
+        ? 'bg-emerald-500'
+        : pct >= 40
+          ? 'bg-amber-500'
+          : 'bg-rose-400'
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-slate-100 pt-3">
+      {categoria && (
+        <span className="inline-flex items-center rounded-md bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">
+          {formatarCategoria(categoria)}
+        </span>
+      )}
+      {temConfianca && (
+        <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+          <span className="uppercase tracking-wide">Confiança</span>
+          <span className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-100">
+            <span
+              className={`block h-full rounded-full ${cor}`}
+              style={{ width: `${pct}%` }}
+            />
+          </span>
+          <span className="font-medium text-slate-500">{pct}%</span>
+        </div>
+      )}
     </div>
   )
 }
