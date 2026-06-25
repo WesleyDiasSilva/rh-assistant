@@ -16,6 +16,8 @@ export default function App() {
   const [mensagens, setMensagens] = useState([])
   const [pergunta, setPergunta] = useState('')
   const [loading, setLoading] = useState(false)
+  const [solicitacoes, setSolicitacoes] = useState([])
+  const [painelAberto, setPainelAberto] = useState(false)
   const listaRef = useRef(null)
   const inputRef = useRef(null)
 
@@ -24,6 +26,19 @@ export default function App() {
       listaRef.current.scrollTop = listaRef.current.scrollHeight
     }
   }, [mensagens, loading])
+
+  async function carregarSolicitacoes() {
+    try {
+      const r = await fetch(`${API_URL}/api/solicitacoes`)
+      setSolicitacoes(await r.json())
+    } catch {
+      // silencioso: a listagem é auxiliar e não deve quebrar o chat.
+    }
+  }
+
+  useEffect(() => {
+    carregarSolicitacoes()
+  }, [])
 
   async function perguntar(texto) {
     const q = texto.trim()
@@ -62,6 +77,9 @@ export default function App() {
       ])
     } finally {
       setLoading(false)
+      // Atualiza a listagem: se a resposta registrou uma solicitação, ela
+      // aparece sem ação manual. O botão "Atualizar" no painel é o reforço.
+      carregarSolicitacoes()
       requestAnimationFrame(() => inputRef.current?.focus())
     }
   }
@@ -81,7 +99,12 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col bg-gradient-to-b from-slate-50 to-white text-slate-900">
-      <Header onReset={novaConversa} hasMessages={!vazio} />
+      <Header
+        onReset={novaConversa}
+        hasMessages={!vazio}
+        onAbrirPainel={() => setPainelAberto(true)}
+        totalSolicitacoes={solicitacoes.length}
+      />
 
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col overflow-hidden px-4 sm:px-6">
         <div
@@ -104,11 +127,18 @@ export default function App() {
           loading={loading}
         />
       </main>
+
+      <PainelSolicitacoes
+        aberto={painelAberto}
+        onFechar={() => setPainelAberto(false)}
+        solicitacoes={solicitacoes}
+        onAtualizar={carregarSolicitacoes}
+      />
     </div>
   )
 }
 
-function Header({ onReset, hasMessages }) {
+function Header({ onReset, hasMessages, onAbrirPainel, totalSolicitacoes }) {
   return (
     <header className="border-b border-slate-200/70 bg-white/70 backdrop-blur">
       <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-4 py-3 sm:px-6">
@@ -122,6 +152,20 @@ function Header({ onReset, hasMessages }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onAbrirPainel}
+            className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+            title="Solicitações registradas"
+          >
+            <Icone nome="list" tiny />
+            Solicitações
+            {totalSolicitacoes > 0 && (
+              <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-violet-100 px-1 text-[10px] font-semibold text-violet-700">
+                {totalSolicitacoes}
+              </span>
+            )}
+          </button>
           {hasMessages && (
             <button
               type="button"
@@ -300,6 +344,100 @@ function MetaResposta({ categoria, confianca }) {
   )
 }
 
+function formatarData(iso) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function PainelSolicitacoes({ aberto, onFechar, solicitacoes, onAtualizar }) {
+  return (
+    <>
+      {/* Overlay */}
+      <div
+        onClick={onFechar}
+        className={`fixed inset-0 z-20 bg-slate-900/20 backdrop-blur-sm transition-opacity ${
+          aberto ? 'opacity-100' : 'pointer-events-none opacity-0'
+        }`}
+      />
+      {/* Drawer */}
+      <aside
+        className={`fixed inset-y-0 right-0 z-30 flex w-full max-w-sm flex-col border-l border-slate-200 bg-white shadow-xl transition-transform duration-300 ${
+          aberto ? 'translate-x-0' : 'translate-x-full'
+        }`}
+      >
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          <div className="leading-tight">
+            <div className="text-sm font-semibold text-slate-900">
+              Solicitações de férias
+            </div>
+            <div className="text-[11px] text-slate-500">
+              {solicitacoes.length}{' '}
+              {solicitacoes.length === 1 ? 'registro' : 'registros'}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={onAtualizar}
+              className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+              title="Atualizar lista"
+            >
+              <Icone nome="refresh" tiny />
+              Atualizar
+            </button>
+            <button
+              type="button"
+              onClick={onFechar}
+              className="flex h-7 w-7 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+              title="Fechar"
+              aria-label="Fechar"
+            >
+              <Icone nome="close" tiny />
+            </button>
+          </div>
+        </div>
+
+        <div className="scroll-soft flex-1 space-y-2 overflow-y-auto p-4">
+          {solicitacoes.length === 0 ? (
+            <div className="mt-10 text-center text-sm text-slate-400">
+              Nenhuma solicitação registrada ainda.
+            </div>
+          ) : (
+            solicitacoes.map((s, i) => (
+              <div
+                key={i}
+                className="rounded-xl border border-slate-200 bg-slate-50/60 p-3"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-slate-800">
+                    {s.funcionario}
+                  </span>
+                  <span className="inline-flex items-center rounded-md bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">
+                    {s.dias} {s.dias === 1 ? 'dia' : 'dias'}
+                  </span>
+                </div>
+                <div className="mt-1 text-xs text-slate-600">
+                  Período: <span className="font-medium">{s.periodo}</span>
+                </div>
+                <div className="mt-1 text-[11px] text-slate-400">
+                  {formatarData(s.timestamp)}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </aside>
+    </>
+  )
+}
+
 function LoadingBubble() {
   return (
     <div className="flex items-start gap-2.5">
@@ -461,6 +599,24 @@ function Icone({ nome, tiny = false }) {
         <svg {...props}>
           <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
           <path d="M14 2v6h6" />
+        </svg>
+      )
+    case 'list':
+      return (
+        <svg {...props}>
+          <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+        </svg>
+      )
+    case 'refresh':
+      return (
+        <svg {...props}>
+          <path d="M21 12a9 9 0 11-2.64-6.36M21 3v6h-6" />
+        </svg>
+      )
+    case 'close':
+      return (
+        <svg {...props}>
+          <path d="M18 6L6 18M6 6l12 12" />
         </svg>
       )
     default:

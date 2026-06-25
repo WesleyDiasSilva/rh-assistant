@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import db
 from app.chat import ChatRequest, responder
-from app.schemas import RespostaRH
+from app.schemas import RespostaRH, Solicitacao
+from app.tools import listar_solicitacoes
 
 app = FastAPI(title="rh-assistant", version="0.1.0")
 
@@ -28,3 +29,8 @@ def health():
 @app.post("/api/chat", response_model=RespostaRH)
 def chat(req: ChatRequest) -> RespostaRH:
     return responder(req)
+
+
+@app.get("/api/solicitacoes", response_model=list[Solicitacao])
+def solicitacoes() -> list[Solicitacao]:
+    return listar_solicitacoes()

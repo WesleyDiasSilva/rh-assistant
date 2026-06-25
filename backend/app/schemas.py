@@ -36,3 +36,12 @@ class RespostaRH(BaseModel):
         le=1.0,
         description="Confiança na resposta, de 0 a 1.",
     )
+
+
+class Solicitacao(BaseModel):
+    """Solicitação de férias registrada via tool."""
+
+    funcionario: str = Field(description="Nome do funcionário.")
+    dias: int = Field(description="Quantidade de dias solicitados.")
+    periodo: str = Field(description="Período desejado das férias.")
+    timestamp: str = Field(description="Momento do registro (ISO 8601).")

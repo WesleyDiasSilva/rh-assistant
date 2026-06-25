@@ -25,6 +25,24 @@ SALDOS_PATH = BACKEND_DIR / "fake_data" / "saldos.json"
 SOLICITACOES_PATH = BACKEND_DIR / "solicitacoes.jsonl"
 
 
+def listar_solicitacoes() -> list[dict]:
+    """Lê solicitacoes.jsonl e devolve as solicitações, da mais recente para a
+    mais antiga. Se o arquivo não existir ou estiver vazio, devolve [].
+
+    Não é uma tool: é usada pela rota GET /api/solicitacoes para exibir o que a
+    tool de registro gravou.
+    """
+    if not SOLICITACOES_PATH.exists():
+        return []
+    registros: list[dict] = []
+    for linha in SOLICITACOES_PATH.read_text(encoding="utf-8").splitlines():
+        linha = linha.strip()
+        if linha:
+            registros.append(json.loads(linha))
+    registros.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
+    return registros
+
+
 @tool
 def consultar_saldo_ferias(funcionario: str) -> str:
     """Consulta o saldo de férias de um funcionário pelo nome.
