@@ -41,3 +41,17 @@ body {
   50%      { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);   }
 }
 .pulse-dot { animation: soft-pulse 1.8s infinite; }
+
+/* Modal: entrada com leve fade + scale (sóbrio e rápido) */
+@keyframes pop-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.animate-pop-in { animation: pop-in 180ms ease-out both; }
+
+/* Fade simples para overlays e faixas */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.animate-fade-in { animation: fade-in 160ms ease-out both; }
