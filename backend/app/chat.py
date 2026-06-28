@@ -18,20 +18,24 @@ com bind_tools na mesma chamada — o modelo seria forçado a "responder" e não
 poderia decidir por uma tool de negócio. Por isso separamos em duas etapas: a
 primeira decide/executa a tool; a segunda formata em RespostaRH.
 
-O contexto das políticas é o conteúdo dos .md em backend/fake_data/, injetado
-direto no prompt (são poucos documentos e cabem no contexto).
+No ramo informativo, o contexto vem de retrieval: busca por similaridade na
+base vetorial (ver app/retrieval.py) traz só os chunks relevantes à pergunta,
+em vez de injetar todas as políticas no prompt.
 
-Requer ANTHROPIC_API_KEY no ambiente (ver .env / docker-compose.yml).
+Requer ANTHROPIC_API_KEY (geração) e OPENAI_API_KEY (embeddings da busca) no
+ambiente (ver .env / docker-compose.yml).
 """
 from __future__ import annotations
 
-from pathlib import Path
+import logging
 
 from langchain_anthropic import ChatAnthropic
+from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel
 
+from app.retrieval import TOP_K, buscar
 from app.schemas import Fonte, RespostaRH
 from app.tools import (
     alerta_teto,
@@ -39,8 +43,7 @@ from app.tools import (
     registrar_solicitacao_ferias,
 )
 
-
-FAKE_DATA_DIR = Path(__file__).resolve().parent.parent / "fake_data"
+logger = logging.getLogger(__name__)
 
 
 # --- Contrato de entrada da API ---------------------------------------------
@@ -52,41 +55,52 @@ class ChatRequest(BaseModel):
     validar_teto: bool = False
 
 
-# --- Carregamento dos documentos (stuffing) ---------------------------------
+# --- Recuperação de contexto (retrieval) ------------------------------------
 
-def _carregar_docs() -> list[tuple[str, str, str]]:
-    """Devolve [(arquivo, titulo, conteudo), ...] para os .md de fake_data/."""
-    docs: list[tuple[str, str, str]] = []
-    if not FAKE_DATA_DIR.exists():
-        return docs
-    for path in sorted(FAKE_DATA_DIR.glob("*.md")):
-        texto = path.read_text(encoding="utf-8").strip()
-        primeira = texto.splitlines()[0] if texto else path.stem
-        titulo = primeira.lstrip("#").strip() or path.stem
-        docs.append((path.name, titulo, texto))
-    return docs
+def _formatar_contexto(chunks: list[Document]) -> str:
+    """Monta o contexto a partir dos chunks recuperados.
+
+    Cada bloco traz título e arquivo da política de origem, para o modelo poder
+    se ancorar na fonte de cada informação. Só os chunks recuperados entram —
+    não mais todos os documentos.
+    """
+    return "\n\n---\n\n".join(
+        f"[Política: {c.metadata.get('titulo')} | arquivo: {c.metadata.get('arquivo')}]\n"
+        f"{c.page_content}"
+        for c in chunks
+    )
 
 
-DOCS = _carregar_docs()
+def _validar_fontes(fontes: list[Fonte], chunks: list[Document]) -> list[Fonte]:
+    """Filtra as fontes citadas pelo modelo contra os chunks recuperados.
 
-# Contexto único com delimitadores claros, para o modelo conseguir citar a
-# política de origem de cada informação.
-CONTEXTO = "\n\n---\n\n".join(
-    f"[Política: {titulo} | arquivo: {arquivo}]\n{conteudo}"
-    for arquivo, titulo, conteudo in DOCS
-)
-
-# Documentos disponíveis no contexto (por ora, os 6).
-FONTES = [Fonte(arquivo=arquivo, titulo=titulo) for arquivo, titulo, _ in DOCS]
+    A seleção de fonte é do modelo — ele é quem "lê" os chunks e sabe quais de
+    fato usou para responder (o top-k traz ruído, então citar todos seria
+    impreciso). O código só faz a salvaguarda anti-alucinação: descarta qualquer
+    arquivo citado que NÃO esteja entre os recuperados e canoniza o título a
+    partir dos metadados (evita divergência de texto). Dedupe por arquivo.
+    """
+    titulos = {
+        c.metadata.get("arquivo"): c.metadata.get("titulo")
+        for c in chunks
+        if c.metadata.get("arquivo")
+    }
+    validas: dict[str, Fonte] = {}
+    for f in fontes:
+        if f.arquivo in titulos and f.arquivo not in validas:
+            validas[f.arquivo] = Fonte(arquivo=f.arquivo, titulo=titulos[f.arquivo] or f.titulo)
+    return list(validas.values())
 
 
 # --- Modelo, tools e chains -------------------------------------------------
 
 SYSTEM = (
     "Você é um assistente de RH. Responda de forma clara e objetiva, SOMENTE "
-    "com base no contexto fornecido. Se a resposta não estiver no contexto, "
-    "diga que não encontrou e sugira procurar o RH. Sempre cite de qual "
-    "política veio a informação.\n\n"
+    "com base no contexto fornecido (trechos recuperados das políticas). Se a "
+    "resposta não estiver nesse contexto, responda exatamente \"Não encontrei "
+    "essa informação na base.\" e sugira procurar o RH — NÃO invente nem use "
+    "conhecimento externo. Nesse caso, deixe a lista de fontes vazia. Sempre "
+    "cite de qual política veio a informação.\n\n"
     "Preencha a resposta estruturada assim:\n"
     "- fontes: apenas as políticas que você de fato usou para responder "
     "(arquivo e titulo exatamente como aparecem no contexto). Se não usou "
@@ -172,9 +186,30 @@ def responder(req: ChatRequest) -> RespostaRH:
             ]
         )
 
-        # Sem tool → pergunta de política: fluxo de structured output existente.
+        # Sem tool → pergunta de política: recupera os chunks relevantes e
+        # responde só com base neles (retrieval em vez de stuffar tudo).
         if not ai_msg.tool_calls:
-            return chain.invoke({"contexto": CONTEXTO, "pergunta": req.pergunta})
+            chunks = buscar(req.pergunta, k=TOP_K)
+            resposta = chain.invoke(
+                {"contexto": _formatar_contexto(chunks), "pergunta": req.pergunta}
+            )
+            # As fontes citadas vêm do modelo (que sabe quais chunks usou); aqui
+            # só validamos contra o conjunto recuperado. Groundedness preservado:
+            # se não encontrou na base, o modelo deixa fontes vazias e a validação
+            # mantém vazio.
+            resposta.fontes = _validar_fontes(resposta.fontes, chunks)
+            # Log de inspeção do retrieval: o conjunto recuperado traz os k chunks
+            # (com ruído, de propósito), mas as fontes citadas devem ser um
+            # subconjunto fiel. Registrar ambos permite observar essa diferença.
+            recuperados = sorted(
+                {c.metadata.get("arquivo") for c in chunks if c.metadata.get("arquivo")}
+            )
+            citados = [f.arquivo for f in resposta.fontes]
+            logger.info(
+                "retrieval informativo: pergunta=%r recuperados=%s citados=%s",
+                req.pergunta, recuperados, citados,
+            )
+            return resposta
 
         # Com tool(s): o código executa cada uma e devolve via ToolMessage.
         tool_messages: list[ToolMessage] = []
