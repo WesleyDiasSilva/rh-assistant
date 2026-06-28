@@ -1,5 +1,5 @@
 {
-  "Ana": { "dias_disponiveis": 30, "dias_usados": 0 },
+  "Ana": { "dias_disponiveis": 10, "dias_usados": 20 },
   "Bruno": { "dias_disponiveis": 18, "dias_usados": 12 },
   "Carla": { "dias_disponiveis": 25, "dias_usados": 5 },
   "Diego": { "dias_disponiveis": 10, "dias_usados": 20 },
