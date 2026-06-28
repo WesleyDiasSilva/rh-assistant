@@ -26,3 +26,20 @@ Pronto. Abra:
 - **Saúde do backend** → http://localhost:8000/health
 
 Para parar: `Ctrl+C` e depois `docker compose down`.
+
+## Base de conhecimento vetorial
+
+As políticas em `backend/fake_data/*.md` são indexadas em uma base vetorial
+(PGVector) para busca por similaridade. Dois scripts gerenciam essa base, e
+ambos rodam dentro do container do backend:
+
+```bash
+# Esvazia a base (remove todos os chunks). Idempotente.
+docker compose exec backend python limpar_base.py
+
+# Indexa as políticas. Idempotente: rodar de novo não duplica os chunks.
+docker compose exec backend python seed_politicas.py
+```
+
+Requer `OPENAI_API_KEY` no `.env` (os embeddings são gerados pela OpenAI).
+
