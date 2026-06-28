@@ -38,6 +38,21 @@ class RespostaRH(BaseModel):
     )
 
 
+class DocumentoBase(BaseModel):
+    """Documento da base de conhecimento, agregado por arquivo."""
+
+    arquivo: str = Field(description="Nome do arquivo .md do documento.")
+    titulo: str = Field(description="Título do documento (1ª linha do .md).")
+    chunks: int = Field(description="Número de chunks indexados do documento.")
+
+
+class RemocaoBase(BaseModel):
+    """Resultado da remoção de um documento da base de conhecimento."""
+
+    arquivo: str = Field(description="Nome do arquivo alvo da remoção.")
+    removidos: int = Field(description="Quantidade de chunks removidos.")
+
+
 class Solicitacao(BaseModel):
     """Solicitação de férias registrada via tool."""
 

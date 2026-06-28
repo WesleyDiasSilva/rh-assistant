@@ -10,6 +10,7 @@ tem o melhor custo/qualidade.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from langchain_core.documents import Document
@@ -20,6 +21,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 import psycopg
 
 from app import db
+
+logger = logging.getLogger(__name__)
 
 # Pasta com os documentos de política (.md) que alimentam a base vetorial.
 FAKE_DATA_DIR = Path(__file__).resolve().parent.parent / "fake_data"
@@ -90,7 +93,13 @@ def indexar_documento(texto: str, metadados: dict) -> int:
     if not arquivo:
         raise ValueError("metadados deve incluir 'arquivo' para gerar IDs estáveis")
 
+    # Logs por etapa do pipeline (split -> embed -> store), para inspeção do
+    # comportamento da indexação ao acompanhar o backend.
     pedacos = _splitter.split_text(texto)
+    logger.info(
+        "[indexação] split: arquivo=%s %d chars -> %d chunks",
+        arquivo, len(texto), len(pedacos),
+    )
     documentos = [
         Document(page_content=pedaco, metadata={**metadados, "chunk": i})
         for i, pedaco in enumerate(pedacos)
@@ -98,7 +107,14 @@ def indexar_documento(texto: str, metadados: dict) -> int:
     ids = [f"{arquivo}::chunk-{i}" for i in range(len(documentos))]
 
     if documentos:
+        logger.info(
+            "[indexação] embeddings: modelo=%s chunks=%d", EMBEDDING_MODEL, len(documentos)
+        )
         get_vectorstore().add_documents(documentos, ids=ids)
+        logger.info(
+            "[indexação] gravado: %d chunks na collection '%s'",
+            len(documentos), COLLECTION_NAME,
+        )
     return len(documentos)
 
 
@@ -142,5 +158,59 @@ def contar_chunks() -> int:
             with conn.cursor() as cur:
                 cur.execute(sql, (COLLECTION_NAME,))
                 return cur.fetchone()[0]
+    except Exception:
+        return 0
+
+
+def listar_documentos() -> list[dict]:
+    """Lista os documentos indexados, agregando os chunks por arquivo.
+
+    Agrega a partir da metadata (arquivo/titulo) gravada em cada chunk. Lê as
+    tabelas internas do langchain-postgres (não há API pública de listagem).
+    Retorna [] se a base ainda não existe.
+    """
+    sql = (
+        "SELECT e.cmetadata->>'arquivo' AS arquivo, "
+        "       e.cmetadata->>'titulo' AS titulo, "
+        "       count(*) AS chunks "
+        "FROM langchain_pg_embedding e "
+        "JOIN langchain_pg_collection c ON c.uuid = e.collection_id "
+        "WHERE c.name = %s "
+        "GROUP BY arquivo, titulo "
+        "ORDER BY arquivo"
+    )
+    try:
+        with psycopg.connect(db.get_dsn(), connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (COLLECTION_NAME,))
+                linhas = cur.fetchall()
+        return [
+            {"arquivo": arquivo, "titulo": titulo, "chunks": chunks}
+            for arquivo, titulo, chunks in linhas
+        ]
+    except Exception:
+        return []
+
+
+def remover_documento(arquivo: str) -> int:
+    """Remove da collection todos os chunks de um arquivo. Retorna quantos.
+
+    Idempotente: arquivo inexistente afeta 0 linhas (rowcount 0), sem erro.
+    Exceções (ex.: base nunca inicializada) resolvem para 0 removidos, para a
+    rota responder de forma limpa em vez de estourar 500.
+    """
+    sql = (
+        "DELETE FROM langchain_pg_embedding e "
+        "USING langchain_pg_collection c "
+        "WHERE e.collection_id = c.uuid AND c.name = %s "
+        "AND e.cmetadata->>'arquivo' = %s"
+    )
+    try:
+        with psycopg.connect(db.get_dsn(), connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (COLLECTION_NAME, arquivo))
+                removidos = cur.rowcount
+            conn.commit()
+        return removidos
     except Exception:
         return 0
