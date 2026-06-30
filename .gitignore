@@ -25,3 +25,6 @@ dist/
 
 # Dados gerados em runtime
 solicitacoes.jsonl
+
+# Material de apoio (não versionar)
+aula.md

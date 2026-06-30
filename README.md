@@ -23,6 +23,9 @@ correspondente.
 - **`aula03-inicio` / `aula03-fim`** — RAG com pgvector: indexação das políticas,
   retrieval no fluxo informativo e gestão da base (listar, enviar e remover
   documentos) via API e UI.
+- **`aula04-fim`** — refinamento do retrieval: a busca passa a expor o score de
+  similaridade nos logs e há um toggle opcional "Reescrever pergunta" que
+  normaliza a pergunta (remove ruído) antes de alimentar busca e geração.
 - **`demonstracao`** — produto de referência completo, com matching por
   palavra-chave sobre os documentos de RH simulados. Não usa LLM nem API key —
   é tudo offline.

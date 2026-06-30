@@ -53,6 +53,10 @@ class ChatRequest(BaseModel):
     # Quando ligado, o saldo consultado é validado contra o teto da política
     # (a tool sinaliza inconsistências). Controlado pela UI.
     validar_teto: bool = False
+    # Quando ligado, a pergunta é normalizada (artigos/palavras supérfluas
+    # removidos) antes de ser usada. A query normalizada alimenta tanto a busca
+    # (estabiliza o ranking do top-k) quanto a geração. Controlado pela UI.
+    reescrever_pergunta: bool = False
 
 
 # --- Recuperação de contexto (retrieval) ------------------------------------
@@ -69,6 +73,26 @@ def _formatar_contexto(chunks: list[Document]) -> str:
         f"{c.page_content}"
         for c in chunks
     )
+
+
+def _reescrever_pergunta(pergunta: str) -> str:
+    """Normaliza a pergunta para a busca (artigos/palavras supérfluas removidos).
+
+    Usa o mesmo modelo da geração (temperature=0 → determinístico). Em caso de
+    saída vazia ou falha, cai para a pergunta original — a reescrita é um reforço
+    da busca, não pode degradar o caminho atual.
+    """
+    try:
+        msg = model.invoke(
+            [
+                SystemMessage(content=SYSTEM_REESCRITA),
+                HumanMessage(content=pergunta),
+            ]
+        )
+        reescrita = (msg.content or "").strip()
+        return reescrita or pergunta
+    except Exception:
+        return pergunta
 
 
 def _validar_fontes(fontes: list[Fonte], chunks: list[Document]) -> list[Fonte]:
@@ -159,6 +183,17 @@ SYSTEM_FORMATA_TOOL = (
     "- confianca: de 0 a 1, sua confiança na resposta."
 )
 
+# Reescrita de consulta: normaliza a pergunta removendo ruído (artigos/palavras
+# supérfluas), que desloca o vetor da pergunta e pode reordenar o top-k (um termo
+# a mais aproxima um chunk irrelevante e afasta o certo). A query normalizada
+# alimenta a busca e a geração, preservando o sentido original.
+SYSTEM_REESCRITA = (
+    "Você reescreve a pergunta do usuário para uma consulta de busca semântica. "
+    "Deixe-a clara e neutra, removendo artigos e palavras desnecessárias, mas "
+    "preservando integralmente o sentido. Responda SOMENTE com a consulta "
+    "reescrita, sem explicação, aspas ou texto adicional."
+)
+
 prompt = ChatPromptTemplate.from_messages(
     [
         ("system", SYSTEM),
@@ -195,9 +230,17 @@ def responder(req: ChatRequest) -> RespostaRH:
         # Sem tool → pergunta de política: recupera os chunks relevantes e
         # responde só com base neles (retrieval em vez de stuffar tudo).
         if not ai_msg.tool_calls:
-            chunks = buscar(req.pergunta, k=TOP_K)
+            # A reescrita (quando ligada) normaliza a pergunta, removendo ruído
+            # (artigos/palavras supérfluas). A query normalizada alimenta TANTO
+            # a busca (estabiliza o ranking do top-k) QUANTO a geração (uma
+            # pergunta limpa reduz recusas por ruído na própria pergunta).
+            consulta = req.pergunta
+            if req.reescrever_pergunta:
+                consulta = _reescrever_pergunta(req.pergunta)
+                logger.info("[rewrite] %r -> %r", req.pergunta, consulta)
+            chunks = buscar(consulta, k=TOP_K)
             resposta = chain.invoke(
-                {"contexto": _formatar_contexto(chunks), "pergunta": req.pergunta}
+                {"contexto": _formatar_contexto(chunks), "pergunta": consulta}
             )
             # As fontes citadas vêm do modelo (que sabe quais chunks usou); aqui
             # só validamos contra o conjunto recuperado. Groundedness preservado:

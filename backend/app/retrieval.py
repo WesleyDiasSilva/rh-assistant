@@ -119,8 +119,26 @@ def indexar_documento(texto: str, metadados: dict) -> int:
 
 
 def buscar(pergunta: str, k: int = TOP_K) -> list[Document]:
-    """Busca por similaridade e retorna os k chunks mais próximos da pergunta."""
-    return get_vectorstore().similarity_search(pergunta, k=k)
+    """Busca por similaridade e retorna os k chunks mais próximos da pergunta.
+
+    Usa similarity_search_with_score para obter, além dos chunks, o score de
+    similaridade de cada um (distância no espaço vetorial: menor = mais próximo).
+    O score é anexado em metadata['score'] de cada Document, preservando o tipo
+    de retorno (list[Document]): os chamadores existentes seguem inalterados e
+    quem precisar do score lê doc.metadata['score'].
+    """
+    resultados = get_vectorstore().similarity_search_with_score(pergunta, k=k)
+    chunks: list[Document] = []
+    for posicao, (doc, score) in enumerate(resultados, start=1):
+        doc.metadata["score"] = score
+        chunks.append(doc)
+        # Log por chunk recuperado (posição + arquivo + score), para inspeção do
+        # ranking da busca — o score evidencia quão próximo cada chunk ficou.
+        logger.info(
+            "[busca] %dº %s score=%.4f",
+            posicao, doc.metadata.get("arquivo"), score,
+        )
+    return chunks
 
 
 def carregar_docs() -> list[tuple[str, str, str]]:

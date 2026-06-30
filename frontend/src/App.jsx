@@ -22,6 +22,7 @@ export default function App() {
   const [documentosBase, setDocumentosBase] = useState([])
   const [carregandoBase, setCarregandoBase] = useState(false)
   const [validarTeto, setValidarTeto] = useState(false)
+  const [reescreverPergunta, setReescreverPergunta] = useState(false)
   const listaRef = useRef(null)
   const inputRef = useRef(null)
 
@@ -73,7 +74,11 @@ export default function App() {
       const r = await fetch(`${API_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pergunta: q, validar_teto: validarTeto }),
+        body: JSON.stringify({
+          pergunta: q,
+          validar_teto: validarTeto,
+          reescrever_pergunta: reescreverPergunta,
+        }),
       })
       const data = await r.json()
       setMensagens((m) => [
@@ -130,6 +135,8 @@ export default function App() {
         totalSolicitacoes={solicitacoes.length}
         validarTeto={validarTeto}
         onToggleValidarTeto={() => setValidarTeto((v) => !v)}
+        reescreverPergunta={reescreverPergunta}
+        onToggleReescrever={() => setReescreverPergunta((v) => !v)}
       />
 
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col overflow-hidden px-4 sm:px-6">
@@ -180,6 +187,8 @@ function Header({
   totalSolicitacoes,
   validarTeto,
   onToggleValidarTeto,
+  reescreverPergunta,
+  onToggleReescrever,
 }) {
   return (
     <header className="border-b border-slate-200/70 bg-white/70 backdrop-blur">
@@ -214,6 +223,27 @@ function Header({
               />
             </span>
             <span>Validar política</span>
+          </button>
+          <button
+            type="button"
+            onClick={onToggleReescrever}
+            role="switch"
+            aria-checked={reescreverPergunta}
+            className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+            title="Normalizar a pergunta antes da busca"
+          >
+            <span
+              className={`relative inline-block h-4 w-7 shrink-0 rounded-full transition-colors ${
+                reescreverPergunta ? 'bg-violet-500' : 'bg-slate-300'
+              }`}
+            >
+              <span
+                className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
+                  reescreverPergunta ? 'translate-x-3' : 'translate-x-0'
+                }`}
+              />
+            </span>
+            <span>Reescrever pergunta</span>
           </button>
           <button
             type="button"
