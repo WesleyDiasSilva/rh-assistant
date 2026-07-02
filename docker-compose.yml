@@ -7,7 +7,9 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
       POSTGRES_DB: ${DB_NAME:-rh_assistant}
     ports:
-      - "5432:5432"
+      # Publica em 5433 no host para não conflitar com um Postgres local na 5432.
+      # Dentro da rede do compose o backend continua acessando db:5432.
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
