@@ -22,10 +22,10 @@ class ChatRequest(BaseModel):
     # Quando ligado, o saldo consultado é validado contra o teto da política
     # (a tool sinaliza inconsistências). Controlado pela UI.
     validar_teto: bool = False
-    # Quando ligado, a pergunta é normalizada (artigos/palavras supérfluas
-    # removidos) antes de ser usada. A query normalizada alimenta tanto a busca
-    # (estabiliza o ranking do top-k) quanto a geração. Controlado pela UI.
-    reescrever_pergunta: bool = False
+    # Quando ligado, se a busca não sustentar a resposta (nenhuma fonte), o
+    # sistema reescreve a pergunta (removendo ruído) e tenta uma única vez mais.
+    # Auto-correção reativa, não pré-processamento. Controlado pela UI.
+    auto_corrigir: bool = False
 
 
 # --- Rota -------------------------------------------------------------------
@@ -35,7 +35,7 @@ def responder(req: ChatRequest) -> RespostaRH:
         estado_final = grafo.invoke(
             {
                 "pergunta": req.pergunta,
-                "reescrever_pergunta": req.reescrever_pergunta,
+                "auto_corrigir": req.auto_corrigir,
                 "validar_teto": req.validar_teto,
             }
         )

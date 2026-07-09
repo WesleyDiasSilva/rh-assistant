@@ -10,8 +10,10 @@ do escopo antes de gastar retrieval/tools:
     START → triagem → (é assunto de RH?)
         ├── não → resposta_direta → END                       (fora de escopo)
         └── sim → decidir_rota → (tem tool_calls?)
-                ├── não → recuperar → gerar → validar_fontes → END  (informativa)
-                └── sim → executar_tools → formatar_tool → END      (rota de tool)
+                ├── não → recuperar → gerar → validar_fontes → (sustentou?)
+                │         ├── não, e auto_corrigir e < 1 retry → reescrever → recuperar
+                │         └── sim, ou sem retry disponível → END       (informativa)
+                └── sim → executar_tools → formatar_tool → END         (rota de tool)
 
 0. triagem: classifica a pergunta em "rh" ou "fora_de_escopo" (saudações/small
    talk = fora_de_escopo). Fora de escopo vai para resposta_direta, que responde
@@ -19,7 +21,10 @@ do escopo antes de gastar retrieval/tools:
 1. decidir_rota (bind_tools): o modelo recebe a pergunta com as tools plugadas
    e decide. Sem tool → pergunta de política. Com tool(s) → executa.
 2a. Rota informativa: recupera os chunks relevantes por similaridade (retrieval)
-    e formula a resposta só com base neles.
+    e formula a resposta só com base neles. Se a resposta não se sustentou na
+    base (nenhuma fonte) e a auto-correção está ligada, o nó reescrever normaliza
+    a pergunta e o ciclo tenta uma única vez mais (teto de tentativas garante
+    terminação) — a reescrita é reação a falha, não pré-processamento.
 2b. Rota de tool: executa cada tool pedida e devolve o resultado ao modelo, que
     formata a resposta final.
 
@@ -68,11 +73,12 @@ class EstadoRH(TypedDict, total=False):
 
     # Entrada
     pergunta: str
-    reescrever_pergunta: bool
+    auto_corrigir: bool
     validar_teto: bool
     # Intermediários
     categoria_triagem: str  # "rh" ou "fora_de_escopo" (definido pelo nó triagem)
-    consulta: str  # pergunta usada na busca/geração (reescrita, se a flag ligar)
+    consulta: str  # pergunta usada na busca/geração (reescrita, após auto-correção)
+    tentativas: int  # nº de reescritas já feitas (teto para a auto-correção terminar)
     ai_msg: Any  # AIMessage da etapa de decisão (carrega os tool_calls)
     chunks: list[Document]  # chunks recuperados na rota informativa
     tool_messages: list[ToolMessage]  # resultados das tools na rota de tool
@@ -167,13 +173,16 @@ SYSTEM_TRIAGEM = (
     "- \"rh\": qualquer assunto de recursos humanos da empresa — políticas "
     "(férias, home-office, benefícios, reembolso, horário, licenças), saldo de "
     "férias de um funcionário ou solicitação/agendamento de férias.\n"
-    "- \"fora_de_escopo\": qualquer outra coisa, incluindo saudações e conversa "
-    "fiada (small talk), pedidos de piada, e perguntas de conhecimento geral "
-    "sem relação com o RH da empresa.\n\n"
-    "Na dúvida entre as duas, prefira \"rh\".\n\n"
+    "- \"fora_de_escopo\": saudações e conversa fiada (small talk) e temas "
+    "claramente alheios ao trabalho (clima, piadas, esportes, notícias).\n\n"
+    "Qualquer pergunta sobre temas de trabalho, empresa, escritório ou condições "
+    "de trabalho é \"rh\", MESMO que o assunto pareça incomum. Na dúvida entre as "
+    "duas, classifique como \"rh\" — o fluxo normal sabe recusar o que não está "
+    "na base.\n\n"
     "Exemplos:\n"
     "- \"quero solicitar férias\" → rh\n"
     "- \"quantos dias a Ana tem?\" → rh\n"
+    "- \"posso trazer meu cachorro pro escritório?\" → rh\n"
     "- \"qual a previsão do tempo?\" → fora_de_escopo\n"
     "- \"oi, tudo bem?\" → fora_de_escopo\n"
     "- \"me conta uma piada\" → fora_de_escopo"
@@ -359,17 +368,14 @@ def rota_apos_decisao(state: EstadoRH) -> str:
 
 
 def recuperar(state: EstadoRH) -> EstadoRH:
-    """Define a consulta e recupera os chunks relevantes por similaridade.
+    """Recupera os chunks relevantes por similaridade para a consulta atual.
 
-    A reescrita (quando ligada) normaliza a pergunta, removendo ruído
-    (artigos/palavras supérfluas). A query normalizada alimenta TANTO a busca
-    (estabiliza o ranking do top-k) QUANTO a geração (uma pergunta limpa reduz
-    recusas por ruído na própria pergunta).
+    Usa a consulta já definida no estado (a pergunta reescrita, quando o nó
+    reescrever rodou numa tentativa anterior) ou, na primeira passada, a própria
+    pergunta. A reescrita deixou de ser pré-processamento aqui: agora é reação a
+    falha, feita no nó reescrever e realimentada neste nó pelo ciclo.
     """
-    consulta = state["pergunta"]
-    if state.get("reescrever_pergunta"):
-        consulta = _reescrever_pergunta(state["pergunta"])
-        logger.info("[rewrite] %r -> %r", state["pergunta"], consulta)
+    consulta = state.get("consulta") or state["pergunta"]
     chunks = buscar(consulta, k=TOP_K)
     return {"consulta": consulta, "chunks": chunks}
 
@@ -404,6 +410,42 @@ def validar_fontes(state: EstadoRH) -> EstadoRH:
         state["pergunta"], recuperados, citados,
     )
     return {"resposta": resposta}
+
+
+# Teto de tentativas de auto-correção: uma reescrita basta para tirar o ruído da
+# pergunta; mais que isso vira loop improdutivo. O teto também garante que o
+# ciclo reescrever → recuperar sempre termine.
+MAX_TENTATIVAS = 1
+
+
+def avaliar_resposta(state: EstadoRH) -> str:
+    """Aresta condicional pós-geração: decide entre reescrever e encerrar.
+
+    Só reescreve se a resposta não se sustentou na base (nenhuma fonte após a
+    validação), a auto-correção está ligada e ainda há tentativa disponível.
+    Caso contrário encerra — inclusive quando a base genuinamente não cobre o
+    assunto, para não insistir nem alucinar.
+    """
+    sem_fontes = not state["resposta"].fontes
+    if sem_fontes and state.get("auto_corrigir") and state.get("tentativas", 0) < MAX_TENTATIVAS:
+        return "reescrever"
+    return "fim"
+
+
+def reescrever(state: EstadoRH) -> EstadoRH:
+    """Reescreve a pergunta (remove ruído) e realimenta a busca — auto-correção.
+
+    Normaliza a pergunta ORIGINAL (não a consulta anterior, para não acumular
+    distorções) via _reescrever_pergunta, grava em consulta e incrementa o
+    contador de tentativas, que serve de teto para o ciclo terminar.
+    """
+    tentativas = state.get("tentativas", 0) + 1
+    consulta = _reescrever_pergunta(state["pergunta"])
+    logger.info(
+        "[auto-correcao] tentativa=%d original=%r reescrita=%r",
+        tentativas, state["pergunta"], consulta,
+    )
+    return {"consulta": consulta, "tentativas": tentativas}
 
 
 def executar_tools(state: EstadoRH) -> EstadoRH:
@@ -451,6 +493,7 @@ def _construir_grafo():
     g.add_node("recuperar", recuperar)
     g.add_node("gerar", gerar)
     g.add_node("validar_fontes", validar_fontes)
+    g.add_node("reescrever", reescrever)
     g.add_node("executar_tools", executar_tools)
     g.add_node("formatar_tool", formatar_tool)
 
@@ -467,10 +510,17 @@ def _construir_grafo():
         rota_apos_decisao,
         {"informativo": "recuperar", "tool": "executar_tools"},
     )
-    # Rota informativa (política).
+    # Rota informativa (política) com auto-correção: se a resposta não se
+    # sustentou na base, reescrever normaliza a pergunta e realimenta recuperar
+    # (ciclo com teto de tentativas); caso contrário, encerra.
     g.add_edge("recuperar", "gerar")
     g.add_edge("gerar", "validar_fontes")
-    g.add_edge("validar_fontes", END)
+    g.add_conditional_edges(
+        "validar_fontes",
+        avaliar_resposta,
+        {"reescrever": "reescrever", "fim": END},
+    )
+    g.add_edge("reescrever", "recuperar")
     # Rota de tool.
     g.add_edge("executar_tools", "formatar_tool")
     g.add_edge("formatar_tool", END)
