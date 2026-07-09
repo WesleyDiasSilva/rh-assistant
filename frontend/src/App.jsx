@@ -193,11 +193,11 @@ function Header({
   return (
     <header className="border-b border-slate-200/70 bg-white/70 backdrop-blur">
       <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-4 py-3 sm:px-6">
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 items-center gap-3">
           <Logo />
-          <div className="leading-tight">
-            <div className="text-sm font-semibold text-slate-900">RH Assistant</div>
-            <div className="text-[11px] text-slate-500">
+          <div className="min-w-0 leading-tight">
+            <div className="truncate text-sm font-semibold text-slate-900">RH Assistant</div>
+            <div className="truncate text-[11px] text-slate-500">
               Tire dúvidas sobre as políticas internas
             </div>
           </div>
@@ -286,7 +286,7 @@ function Header({
 
 function Logo() {
   return (
-    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 text-[11px] font-bold tracking-tight text-white shadow-sm shadow-violet-500/30">
+    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 text-[11px] font-bold tracking-tight text-white shadow-sm shadow-violet-500/30">
       RH
     </div>
   )
