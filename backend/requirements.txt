@@ -8,6 +8,7 @@ python-multipart==0.0.32  # upload multipart de documentos (.md) na base
 langchain==1.3.10
 langchain-anthropic==1.4.6
 langchain-core==1.4.8
+langgraph==1.2.6  # orquestração do fluxo de decisão em grafo (importado direto)
 
 # Retrieval (pgvector + embeddings)
 langchain-postgres==0.0.17
