@@ -4,12 +4,18 @@ Fluxo de decisão do assistente de RH modelado como grafo (LangGraph).
 O atendimento continua tendo dois caminhos que não cabem numa única chamada ao
 modelo (tool calling e structured output se excluem — ver nota abaixo), mas
 agora cada etapa é um nó explícito de um StateGraph, com o estado fluindo entre
-eles em vez de variáveis locais:
+eles em vez de variáveis locais. Uma triagem na entrada desvia o que está fora
+do escopo antes de gastar retrieval/tools:
 
-    START → decidir_rota → (tem tool_calls?)
-        ├── não → recuperar → gerar → validar_fontes → END   (rota informativa)
-        └── sim → executar_tools → formatar_tool → END        (rota de tool)
+    START → triagem → (é assunto de RH?)
+        ├── não → resposta_direta → END                       (fora de escopo)
+        └── sim → decidir_rota → (tem tool_calls?)
+                ├── não → recuperar → gerar → validar_fontes → END  (informativa)
+                └── sim → executar_tools → formatar_tool → END      (rota de tool)
 
+0. triagem: classifica a pergunta em "rh" ou "fora_de_escopo" (saudações/small
+   talk = fora_de_escopo). Fora de escopo vai para resposta_direta, que responde
+   com educação dentro do papel do assistente, sem retrieval nem tools.
 1. decidir_rota (bind_tools): o modelo recebe a pergunta com as tools plugadas
    e decide. Sem tool → pergunta de política. Com tool(s) → executa.
 2a. Rota informativa: recupera os chunks relevantes por similaridade (retrieval)
@@ -29,13 +35,14 @@ ambiente (ver .env / docker-compose.yml).
 from __future__ import annotations
 
 import logging
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel, Field
 
 from app.retrieval import TOP_K, buscar
 from app.schemas import Fonte, RespostaRH
@@ -64,6 +71,7 @@ class EstadoRH(TypedDict, total=False):
     reescrever_pergunta: bool
     validar_teto: bool
     # Intermediários
+    categoria_triagem: str  # "rh" ou "fora_de_escopo" (definido pelo nó triagem)
     consulta: str  # pergunta usada na busca/geração (reescrita, se a flag ligar)
     ai_msg: Any  # AIMessage da etapa de decisão (carrega os tool_calls)
     chunks: list[Document]  # chunks recuperados na rota informativa
@@ -150,12 +158,55 @@ SYSTEM_REESCRITA = (
     "reescrita, sem explicação, aspas ou texto adicional."
 )
 
+# Triagem de entrada: classifica se a pergunta é assunto de RH ou está fora do
+# escopo (saudações/small talk incluídos). Serve para desviar o que não é RH
+# antes de gastar retrieval/tools, respondendo direto e com educação.
+SYSTEM_TRIAGEM = (
+    "Você é a triagem de um assistente de RH interno. Classifique a mensagem do "
+    "usuário em uma de duas categorias:\n"
+    "- \"rh\": qualquer assunto de recursos humanos da empresa — políticas "
+    "(férias, home-office, benefícios, reembolso, horário, licenças), saldo de "
+    "férias de um funcionário ou solicitação/agendamento de férias.\n"
+    "- \"fora_de_escopo\": qualquer outra coisa, incluindo saudações e conversa "
+    "fiada (small talk), pedidos de piada, e perguntas de conhecimento geral "
+    "sem relação com o RH da empresa.\n\n"
+    "Na dúvida entre as duas, prefira \"rh\".\n\n"
+    "Exemplos:\n"
+    "- \"quero solicitar férias\" → rh\n"
+    "- \"quantos dias a Ana tem?\" → rh\n"
+    "- \"qual a previsão do tempo?\" → fora_de_escopo\n"
+    "- \"oi, tudo bem?\" → fora_de_escopo\n"
+    "- \"me conta uma piada\" → fora_de_escopo"
+)
+
+# Resposta direta ao que a triagem barrou: mantém o usuário dentro do papel do
+# assistente, sem inventar informação de RH nem acionar retrieval/tools.
+SYSTEM_RESPOSTA_DIRETA = (
+    "Você é um assistente de RH interno da empresa. A mensagem do usuário NÃO é "
+    "sobre RH. Responda em português, de forma breve e cordial:\n"
+    "- Se for uma saudação ou conversa fiada, cumprimente de volta e diga "
+    "objetivamente no que você pode ajudar (políticas internas, saldo de férias "
+    "e solicitação de férias).\n"
+    "- Se for um assunto fora do escopo (ex.: previsão do tempo, piadas, "
+    "conhecimento geral), explique gentilmente que você só trata de temas "
+    "internos da empresa e ofereça ajuda com esses temas.\n"
+    "Não invente informação. Responda apenas com a mensagem ao usuário."
+)
+
 prompt = ChatPromptTemplate.from_messages(
     [
         ("system", SYSTEM),
         ("human", "Contexto:\n{contexto}\n\nPergunta: {pergunta}"),
     ]
 )
+
+
+class _Triagem(BaseModel):
+    """Saída estruturada da triagem: um único campo com a categoria da pergunta."""
+
+    categoria: Literal["rh", "fora_de_escopo"] = Field(
+        description="'rh' se for assunto de RH da empresa; 'fora_de_escopo' caso contrário."
+    )
 
 
 # --- Modelo, tools e chains -------------------------------------------------
@@ -169,6 +220,9 @@ model_com_tools = model.bind_tools(TOOLS)
 
 # Formatação: modelo que sempre devolve RespostaRH.
 model_estruturado = model.with_structured_output(RespostaRH)
+
+# Triagem: chamada leve que devolve só a categoria (rh / fora_de_escopo).
+model_triagem = model.with_structured_output(_Triagem)
 
 # Chain de política (sem tool): prompt com contexto | saída estruturada.
 chain = prompt | model_estruturado
@@ -232,6 +286,53 @@ def _validar_fontes(fontes: list[Fonte], chunks: list[Document]) -> list[Fonte]:
 
 
 # --- Nós --------------------------------------------------------------------
+
+def triagem(state: EstadoRH) -> EstadoRH:
+    """Classifica a pergunta em "rh" ou "fora_de_escopo" (chamada leve).
+
+    Fail-open: qualquer falha na chamada classifica como "rh", para a triagem
+    nunca derrubar uma pergunta legítima — na dúvida, segue o fluxo normal.
+    """
+    try:
+        resultado = model_triagem.invoke(
+            [
+                SystemMessage(content=SYSTEM_TRIAGEM),
+                HumanMessage(content=state["pergunta"]),
+            ]
+        )
+        categoria = resultado.categoria
+    except Exception:
+        categoria = "rh"
+    logger.info("[triagem] pergunta=%r categoria=%s", state["pergunta"], categoria)
+    return {"categoria_triagem": categoria}
+
+
+def rota_apos_triagem(state: EstadoRH) -> str:
+    """Aresta condicional: fora de escopo responde direto; RH segue o fluxo."""
+    return "fora_de_escopo" if state["categoria_triagem"] == "fora_de_escopo" else "rh"
+
+
+def resposta_direta(state: EstadoRH) -> EstadoRH:
+    """Responde com educação ao que a triagem barrou, sem retrieval nem tools.
+
+    Devolve RespostaRH com fontes vazias e categoria "outro": a resposta não vem
+    de uma política nem de um sistema interno.
+    """
+    msg = model.invoke(
+        [
+            SystemMessage(content=SYSTEM_RESPOSTA_DIRETA),
+            HumanMessage(content=state["pergunta"]),
+        ]
+    )
+    texto = (msg.content or "").strip()
+    resposta = RespostaRH(
+        resposta=texto,
+        fontes=[],
+        categoria="outro",
+        confianca=1.0,
+    )
+    return {"resposta": resposta}
+
 
 def decidir_rota(state: EstadoRH) -> EstadoRH:
     """Etapa de decisão: o modelo (com tools plugadas) decide se usa alguma.
@@ -344,6 +445,8 @@ def formatar_tool(state: EstadoRH) -> EstadoRH:
 def _construir_grafo():
     """Monta e compila o StateGraph do fluxo de decisão (API clássica)."""
     g = StateGraph(EstadoRH)
+    g.add_node("triagem", triagem)
+    g.add_node("resposta_direta", resposta_direta)
     g.add_node("decidir_rota", decidir_rota)
     g.add_node("recuperar", recuperar)
     g.add_node("gerar", gerar)
@@ -351,7 +454,14 @@ def _construir_grafo():
     g.add_node("executar_tools", executar_tools)
     g.add_node("formatar_tool", formatar_tool)
 
-    g.add_edge(START, "decidir_rota")
+    # Triagem na entrada: fora de escopo responde direto; RH segue o fluxo.
+    g.add_edge(START, "triagem")
+    g.add_conditional_edges(
+        "triagem",
+        rota_apos_triagem,
+        {"fora_de_escopo": "resposta_direta", "rh": "decidir_rota"},
+    )
+    g.add_edge("resposta_direta", END)
     g.add_conditional_edges(
         "decidir_rota",
         rota_apos_decisao,
