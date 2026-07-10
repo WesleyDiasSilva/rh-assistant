@@ -18,8 +18,9 @@ do escopo antes de gastar retrieval/tools:
 O estado é persistido por conversa (thread) por um checkpointer (ver
 compilar_grafo): o campo `mensagens` acumula o histórico via add_messages e as
 três rotas convergem em finalizar, que registra o par (pergunta, resposta) do
-turno. Os nós triagem, decidir_rota e gerar leem esse histórico; contextualizar
-o usa para resolver referências (pronomes/elipses) na consulta de busca.
+turno. Os nós triagem, decidir_rota, resposta_direta e gerar leem esse
+histórico; contextualizar o usa para resolver referências (pronomes/elipses) na
+consulta de busca.
 
 0. triagem: classifica a pergunta em "rh" ou "fora_de_escopo" (saudações/small
    talk = fora_de_escopo). Fora de escopo vai para resposta_direta, que responde
@@ -376,6 +377,7 @@ def resposta_direta(state: EstadoRH) -> EstadoRH:
     msg = model.invoke(
         [
             SystemMessage(content=SYSTEM_RESPOSTA_DIRETA),
+            *state.get("mensagens", []),
             HumanMessage(content=state["pergunta"]),
         ]
     )
