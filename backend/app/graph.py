@@ -10,7 +10,7 @@ do escopo antes de gastar retrieval/tools:
     START → triagem → (é assunto de RH?)
         ├── não → resposta_direta → finalizar → END           (fora de escopo)
         └── sim → decidir_rota → (tem tool_calls?)
-                ├── não → recuperar → gerar → validar_fontes → (sustentou?)
+                ├── não → contextualizar → recuperar → gerar → validar_fontes → (sustentou?)
                 │         ├── não, e auto_corrigir e < 1 retry → reescrever → recuperar
                 │         └── sim, ou sem retry disponível → finalizar → END  (informativa)
                 └── sim → executar_tools → formatar_tool → finalizar → END    (rota de tool)
@@ -18,19 +18,20 @@ do escopo antes de gastar retrieval/tools:
 O estado é persistido por conversa (thread) por um checkpointer (ver
 compilar_grafo): o campo `mensagens` acumula o histórico via add_messages e as
 três rotas convergem em finalizar, que registra o par (pergunta, resposta) do
-turno. Os nós triagem, decidir_rota e gerar leem esse histórico para dar
-continuidade à conversa entre turnos.
+turno. Os nós triagem, decidir_rota e gerar leem esse histórico; contextualizar
+o usa para resolver referências (pronomes/elipses) na consulta de busca.
 
 0. triagem: classifica a pergunta em "rh" ou "fora_de_escopo" (saudações/small
    talk = fora_de_escopo). Fora de escopo vai para resposta_direta, que responde
    com educação dentro do papel do assistente, sem retrieval nem tools.
 1. decidir_rota (bind_tools): o modelo recebe a pergunta (com o histórico) e as
    tools plugadas e decide. Sem tool → pergunta de política. Com tool(s) → executa.
-2a. Rota informativa: recupera os chunks relevantes por similaridade (retrieval)
-    e formula a resposta só com base neles. Se a resposta não se sustentou na
-    base (nenhuma fonte) e a auto-correção está ligada, o nó reescrever normaliza
-    a pergunta e o ciclo tenta uma única vez mais (teto de tentativas garante
-    terminação) — a reescrita é reação a falha, não pré-processamento.
+2a. Rota informativa: contextualizar resolve referências ao histórico numa
+    consulta autônoma; recuperar traz os chunks por similaridade e gerar formula
+    a resposta só com base neles. Se a resposta não se sustentou na base (nenhuma
+    fonte) e a auto-correção está ligada, o nó reescrever normaliza a pergunta e o
+    ciclo tenta uma única vez mais (teto de tentativas garante terminação) — a
+    reescrita é reação a falha, não pré-processamento.
 2b. Rota de tool: executa cada tool pedida e devolve o resultado ao modelo, que
     formata a resposta final.
 
@@ -173,6 +174,35 @@ SYSTEM_REESCRITA = (
     "Deixe-a clara e neutra, removendo artigos e palavras desnecessárias, mas "
     "preservando integralmente o sentido. Responda SOMENTE com a consulta "
     "reescrita, sem explicação, aspas ou texto adicional."
+)
+
+# Contextualização da consulta: resolve referências ao histórico (pronomes,
+# elipses) transformando a pergunta atual numa consulta autônoma. A busca
+# (recuperar) não lê o histórico; sem este passo, um follow-up como "e ela pode
+# tirar tudo de uma vez?" embutiria longe do chunk certo por não conter o
+# assunto/entidade do turno anterior. Só age quando há histórico.
+SYSTEM_CONTEXTUALIZAR = (
+    "Dada a conversa anterior e a pergunta atual, reformule a pergunta atual "
+    "numa consulta de busca AUTÔNOMA, que faça sentido sozinha sem o histórico.\n"
+    "Regras:\n"
+    "1. Resolva pronomes e referências (ela/ele/isso) usando o histórico — ex.: "
+    "\"ela\" passa a ser o funcionário citado antes.\n"
+    "2. PRESERVE O TIPO da pergunta: uma pergunta sobre REGRA/POLÍTICA continua "
+    "uma consulta sobre a regra/política e NÃO deve virar uma consulta por dado "
+    "individual (saldo, quantos dias fulano tem). Só reformule como consulta de "
+    "saldo se a pergunta atual for realmente sobre o saldo de alguém.\n"
+    "3. Mantenha o ASSUNTO do turno anterior explícito na consulta (ex.: a "
+    "palavra \"férias\"), completando elipses.\n"
+    "4. Não responda à pergunta. Responda SOMENTE com a consulta reformulada, "
+    "sem explicação, aspas ou texto adicional.\n\n"
+    "Exemplo:\n"
+    "Histórico: usuário perguntou o saldo de férias da Ana; o assistente "
+    "respondeu que a Ana tem 10 dias.\n"
+    "Pergunta atual: \"E ela pode tirar tudo de uma vez?\"\n"
+    "Consulta correta: \"regras da política de férias para tirar todos os dias "
+    "de uma vez (fracionamento)\"\n"
+    "Consulta ERRADA (não faça): \"saldo de férias da Ana para tirar de uma "
+    "vez\" — vira dado individual e perde a regra."
 )
 
 # Triagem de entrada: classifica se a pergunta é assunto de RH ou está fora do
@@ -384,6 +414,36 @@ def rota_apos_decisao(state: EstadoRH) -> str:
     return "tool" if state["ai_msg"].tool_calls else "informativo"
 
 
+def contextualizar(state: EstadoRH) -> EstadoRH:
+    """Reformula a pergunta atual em consulta autônoma resolvendo o histórico.
+
+    Roda na entrada da rota informativa, antes da busca: resolve pronomes e
+    elipses (ex.: "ela" → "Ana", "tirar tudo de uma vez" → "tirar todos os dias
+    de férias de uma vez") para a consulta não depender do turno anterior — a
+    busca (recuperar) é cega ao histórico. No primeiro turno (sem histórico) a
+    consulta é a própria pergunta. Fail-open: qualquer falha cai para a pergunta
+    original, pois a contextualização reforça a busca e não pode degradá-la.
+    """
+    mensagens = state.get("mensagens", [])
+    if not mensagens:
+        return {"consulta": state["pergunta"]}
+    try:
+        msg = model.invoke(
+            [
+                SystemMessage(content=SYSTEM_CONTEXTUALIZAR),
+                *mensagens,
+                HumanMessage(content=state["pergunta"]),
+            ]
+        )
+        consulta = (msg.content or "").strip() or state["pergunta"]
+    except Exception:
+        consulta = state["pergunta"]
+    logger.info(
+        "[contextualizar] original=%r consulta=%r", state["pergunta"], consulta
+    )
+    return {"consulta": consulta}
+
+
 def recuperar(state: EstadoRH) -> EstadoRH:
     """Recupera os chunks relevantes por similaridade para a consulta atual.
 
@@ -537,6 +597,7 @@ def montar_grafo() -> StateGraph:
     g.add_node("triagem", triagem)
     g.add_node("resposta_direta", resposta_direta)
     g.add_node("decidir_rota", decidir_rota)
+    g.add_node("contextualizar", contextualizar)
     g.add_node("recuperar", recuperar)
     g.add_node("gerar", gerar)
     g.add_node("validar_fontes", validar_fontes)
@@ -556,11 +617,13 @@ def montar_grafo() -> StateGraph:
     g.add_conditional_edges(
         "decidir_rota",
         rota_apos_decisao,
-        {"informativo": "recuperar", "tool": "executar_tools"},
+        {"informativo": "contextualizar", "tool": "executar_tools"},
     )
-    # Rota informativa (política) com auto-correção: se a resposta não se
-    # sustentou na base, reescrever normaliza a pergunta e realimenta recuperar
-    # (ciclo com teto de tentativas); caso contrário, encerra pelo nó terminal.
+    # Rota informativa (política): contextualiza a consulta (resolve o histórico)
+    # antes da busca. Com auto-correção, se a resposta não se sustentou na base,
+    # reescrever normaliza a pergunta e realimenta recuperar (ciclo com teto de
+    # tentativas); caso contrário, encerra pelo nó terminal.
+    g.add_edge("contextualizar", "recuperar")
     g.add_edge("recuperar", "gerar")
     g.add_edge("gerar", "validar_fontes")
     g.add_conditional_edges(
