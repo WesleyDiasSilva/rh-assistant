@@ -7,6 +7,8 @@ campos, evitando a resposta em string solta.
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -51,6 +53,21 @@ class RemocaoBase(BaseModel):
 
     arquivo: str = Field(description="Nome do arquivo alvo da remoção.")
     removidos: int = Field(description="Quantidade de chunks removidos.")
+
+
+class Conversa(BaseModel):
+    """Metadados de uma conversa, para a listagem no produto."""
+
+    id: str = Field(description="Identificador da conversa (thread do checkpointer).")
+    titulo: str = Field(description="Título curto, derivado da primeira pergunta.")
+    criada_em: datetime = Field(description="Momento de criação da conversa.")
+
+
+class MensagemHistorico(BaseModel):
+    """Uma mensagem do histórico de uma conversa, para hidratar o chat."""
+
+    papel: str = Field(description="Autor da mensagem: 'usuario' ou 'assistente'.")
+    texto: str = Field(description="Conteúdo da mensagem.")
 
 
 class Solicitacao(BaseModel):

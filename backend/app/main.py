@@ -7,10 +7,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg.rows import dict_row
 
-from app import db, retrieval
+from app import conversas, db, retrieval
 from app.chat import ChatRequest, responder
 from app.graph import compilar_grafo
-from app.schemas import DocumentoBase, RemocaoBase, RespostaRH, Solicitacao
+from app.schemas import (
+    Conversa,
+    DocumentoBase,
+    MensagemHistorico,
+    RemocaoBase,
+    RespostaRH,
+    Solicitacao,
+)
 from app.tools import listar_solicitacoes
 
 # Garante que os logs da aplicação (ex.: boot da extensão pgvector) apareçam;
@@ -26,6 +33,9 @@ async def lifespan(app: FastAPI):
     # Garante a extensão pgvector antes de atender requisições, independente do
     # estado do volume do Postgres (volume novo ou pré-existente sem a extensão).
     db.garantir_extensao_vector()
+    # Metadados de conversas (listagem/histórico): idempotente, cobre volume novo
+    # e pré-existente, mesmo padrão da extensão pgvector acima.
+    db.garantir_tabela_conversas()
 
     # Checkpointer da memória de conversa: uma conexão psycopg v3 dedicada,
     # mantida viva por toda a aplicação. O PostgresSaver precisa de conexão
@@ -77,6 +87,35 @@ def chat(req: ChatRequest, request: Request) -> RespostaRH:
 @app.get("/api/solicitacoes", response_model=list[Solicitacao])
 def solicitacoes() -> list[Solicitacao]:
     return listar_solicitacoes()
+
+
+# --- Conversas (metadados e histórico) --------------------------------------
+
+@app.get("/api/conversas", response_model=list[Conversa])
+def listar_conversas() -> list[Conversa]:
+    """Lista as conversas registradas, da mais recente para a mais antiga."""
+    return [Conversa(**c) for c in conversas.listar()]
+
+
+@app.get("/api/conversas/{conversa_id}", response_model=list[MensagemHistorico])
+def historico_conversa(conversa_id: str, request: Request) -> list[MensagemHistorico]:
+    """Devolve o histórico de uma conversa, para hidratar o chat na interface.
+
+    A fonte é o checkpointer (estado da thread): get_state expõe o campo
+    `mensagens` acumulado. Só os papéis usuário/assistente entram, na ordem.
+    Conversa não registrada → 404.
+    """
+    if not conversas.existe(conversa_id):
+        raise HTTPException(status_code=404, detail="Conversa não encontrada.")
+    snap = request.app.state.grafo.get_state(
+        {"configurable": {"thread_id": conversa_id}}
+    )
+    papel = {"human": "usuario", "ai": "assistente"}
+    return [
+        MensagemHistorico(papel=papel[m.type], texto=m.content)
+        for m in snap.values.get("mensagens", [])
+        if getattr(m, "type", None) in papel
+    ]
 
 
 # --- Base de conhecimento (retrieval) ---------------------------------------

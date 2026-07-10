@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from app import conversas
 from app.schemas import RespostaRH
 
 
@@ -57,6 +58,9 @@ def responder(req: ChatRequest, grafo) -> RespostaRH:
             },
             config={"configurable": {"thread_id": req.conversa_id}},
         )
+        # Registra o metadado da conversa no primeiro turno (no-op nos demais).
+        # Fica na camada de API: título é metadado de produto, não estado do grafo.
+        conversas.registrar_se_nova(req.conversa_id, req.pergunta)
         return estado_final["resposta"]
     except Exception as exc:  # ex.: sem ANTHROPIC_API_KEY, falha de rede/API
         return RespostaRH(

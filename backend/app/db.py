@@ -49,6 +49,33 @@ def garantir_extensao_vector() -> bool:
         return False
 
 
+def garantir_tabela_conversas() -> bool:
+    """Garante a tabela de metadados de conversas.
+
+    Idempotente (CREATE TABLE IF NOT EXISTS), no mesmo espírito de
+    garantir_extensao_vector: cobre volume novo e pré-existente. Guarda só os
+    metadados de produto (título e data); o estado da conversa em si vive no
+    checkpointer. Falhas transitórias são logadas e não derrubam o boot.
+    """
+    sql = (
+        "CREATE TABLE IF NOT EXISTS conversas ("
+        "id TEXT PRIMARY KEY, "
+        "titulo TEXT NOT NULL, "
+        "criada_em TIMESTAMPTZ NOT NULL DEFAULT now()"
+        ")"
+    )
+    try:
+        with psycopg.connect(get_dsn(), connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+            conn.commit()
+        logger.info("Tabela de conversas garantida (CREATE TABLE IF NOT EXISTS conversas).")
+        return True
+    except Exception as exc:
+        logger.warning("Não foi possível garantir a tabela de conversas no boot: %s", exc)
+        return False
+
+
 def ping() -> bool:
     try:
         with psycopg.connect(get_dsn(), connect_timeout=3) as conn:
