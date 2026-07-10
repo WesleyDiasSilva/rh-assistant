@@ -5,6 +5,7 @@ import psycopg
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from psycopg.rows import dict_row
 
 from app import conversas, db, retrieval
@@ -47,7 +48,12 @@ async def lifespan(app: FastAPI):
         prepare_threshold=0,
         row_factory=dict_row,
     )
-    checkpointer = PostgresSaver(conn)
+    # O estado guarda um RespostaRH (Pydantic). Declarar esse tipo como módulo
+    # permitido no serializer evita o aviso de "unregistered type" na
+    # desserialização (get_state) — que versões futuras do LangGraph bloqueariam
+    # — resolvendo na origem, sem silenciar log.
+    serde = JsonPlusSerializer(allowed_msgpack_modules=[("app.schemas", "RespostaRH")])
+    checkpointer = PostgresSaver(conn, serde=serde)
     checkpointer.setup()  # cria/migra as tabelas checkpoint* (idempotente)
     # Grafo compilado com o checkpointer: só aqui, pois a compilação depende dele.
     app.state.grafo = compilar_grafo(checkpointer)
