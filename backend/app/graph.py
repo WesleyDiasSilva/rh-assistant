@@ -8,18 +8,24 @@ eles em vez de variáveis locais. Uma triagem na entrada desvia o que está fora
 do escopo antes de gastar retrieval/tools:
 
     START → triagem → (é assunto de RH?)
-        ├── não → resposta_direta → END                       (fora de escopo)
+        ├── não → resposta_direta → finalizar → END           (fora de escopo)
         └── sim → decidir_rota → (tem tool_calls?)
                 ├── não → recuperar → gerar → validar_fontes → (sustentou?)
                 │         ├── não, e auto_corrigir e < 1 retry → reescrever → recuperar
-                │         └── sim, ou sem retry disponível → END       (informativa)
-                └── sim → executar_tools → formatar_tool → END         (rota de tool)
+                │         └── sim, ou sem retry disponível → finalizar → END  (informativa)
+                └── sim → executar_tools → formatar_tool → finalizar → END    (rota de tool)
+
+O estado é persistido por conversa (thread) por um checkpointer (ver
+compilar_grafo): o campo `mensagens` acumula o histórico via add_messages e as
+três rotas convergem em finalizar, que registra o par (pergunta, resposta) do
+turno. Os nós triagem, decidir_rota e gerar leem esse histórico para dar
+continuidade à conversa entre turnos.
 
 0. triagem: classifica a pergunta em "rh" ou "fora_de_escopo" (saudações/small
    talk = fora_de_escopo). Fora de escopo vai para resposta_direta, que responde
    com educação dentro do papel do assistente, sem retrieval nem tools.
-1. decidir_rota (bind_tools): o modelo recebe a pergunta com as tools plugadas
-   e decide. Sem tool → pergunta de política. Com tool(s) → executa.
+1. decidir_rota (bind_tools): o modelo recebe a pergunta (com o histórico) e as
+   tools plugadas e decide. Sem tool → pergunta de política. Com tool(s) → executa.
 2a. Rota informativa: recupera os chunks relevantes por similaridade (retrieval)
     e formula a resposta só com base neles. Se a resposta não se sustentou na
     base (nenhuma fonte) e a auto-correção está ligada, o nó reescrever normaliza
@@ -40,13 +46,14 @@ ambiente (ver .env / docker-compose.yml).
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.documents import Document
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 from app.retrieval import TOP_K, buscar
@@ -65,16 +72,20 @@ logger = logging.getLogger(__name__)
 class EstadoRH(TypedDict, total=False):
     """Estado que flui entre os nós do grafo.
 
-    TypedDict simples (sem Annotated/reducers): cada nó devolve um dict parcial
-    e o LangGraph sobrescreve as chaves atualizadas. Os campos cobrem tanto a
-    entrada (pergunta e as flags de UI) quanto os valores intermediários que
-    antes eram variáveis locais do fluxo.
+    A maioria das chaves usa sobrescrita padrão (cada nó devolve um dict parcial
+    e o LangGraph substitui a chave). A exceção é `mensagens`, anotada com o
+    reducer add_messages: ela ACUMULA o histórico da conversa entre turnos (o
+    checkpointer persiste esse campo por thread), em vez de ser sobrescrita.
+    Os campos cobrem a entrada (pergunta e flags de UI), o histórico e os
+    valores intermediários que antes eram variáveis locais do fluxo.
     """
 
     # Entrada
     pergunta: str
     auto_corrigir: bool
     validar_teto: bool
+    # Histórico da conversa (acumula via add_messages; persistido por thread)
+    mensagens: Annotated[list, add_messages]
     # Intermediários
     categoria_triagem: str  # "rh" ou "fora_de_escopo" (definido pelo nó triagem)
     consulta: str  # pergunta usada na busca/geração (reescrita, após auto-correção)
@@ -205,6 +216,10 @@ SYSTEM_RESPOSTA_DIRETA = (
 prompt = ChatPromptTemplate.from_messages(
     [
         ("system", SYSTEM),
+        # Histórico da conversa antes da pergunta atual: permite resolver
+        # referências a turnos anteriores (ex.: "ela", "e isso?") sem repetir
+        # o contexto. Vazio no primeiro turno.
+        MessagesPlaceholder("historico"),
         ("human", "Contexto:\n{contexto}\n\nPergunta: {pergunta}"),
     ]
 )
@@ -306,6 +321,7 @@ def triagem(state: EstadoRH) -> EstadoRH:
         resultado = model_triagem.invoke(
             [
                 SystemMessage(content=SYSTEM_TRIAGEM),
+                *state.get("mensagens", []),
                 HumanMessage(content=state["pergunta"]),
             ]
         )
@@ -352,6 +368,7 @@ def decidir_rota(state: EstadoRH) -> EstadoRH:
     ai_msg = model_com_tools.invoke(
         [
             SystemMessage(content=SYSTEM_DECISAO),
+            *state.get("mensagens", []),
             HumanMessage(content=state["pergunta"]),
         ]
     )
@@ -383,7 +400,11 @@ def recuperar(state: EstadoRH) -> EstadoRH:
 def gerar(state: EstadoRH) -> EstadoRH:
     """Formula a resposta de política só com base nos chunks recuperados."""
     resposta = chain.invoke(
-        {"contexto": _formatar_contexto(state["chunks"]), "pergunta": state["consulta"]}
+        {
+            "contexto": _formatar_contexto(state["chunks"]),
+            "pergunta": state["consulta"],
+            "historico": state.get("mensagens", []),
+        }
     )
     return {"resposta": resposta}
 
@@ -482,10 +503,36 @@ def formatar_tool(state: EstadoRH) -> EstadoRH:
     return {"resposta": resposta}
 
 
+def finalizar(state: EstadoRH) -> EstadoRH:
+    """Nó terminal: registra o par (pergunta, resposta) no histórico da thread.
+
+    Ponto ÚNICO de escrita no histórico, comum às três rotas (fora de escopo,
+    informativa e de tool). Roda uma vez por turno, depois que a resposta final
+    já está no estado — evita o registro duplicado que ocorreria se cada rota
+    (ou o nó validar_fontes, que pode repetir na auto-correção) gravasse por si.
+
+    Só grava o TEXTO das mensagens (HumanMessage/AIMessage de conteúdo puro),
+    não o AIMessage de decisão com tool_calls: manter tool_calls no histórico
+    quebraria uma reinvocação futura de bind_tools (tool_call sem ToolMessage
+    correspondente). O add_messages acumula esse par ao histórico persistido.
+    """
+    resposta = state["resposta"]
+    return {
+        "mensagens": [
+            HumanMessage(content=state["pergunta"]),
+            AIMessage(content=resposta.resposta),
+        ]
+    }
+
+
 # --- Montagem do grafo ------------------------------------------------------
 
-def _construir_grafo():
-    """Monta e compila o StateGraph do fluxo de decisão (API clássica)."""
+def montar_grafo() -> StateGraph:
+    """Monta o StateGraph do fluxo de decisão (nós + arestas), sem compilar.
+
+    A montagem é mantida separada da compilação para o checkpointer poder ser
+    injetado no momento certo (aberto no lifespan do FastAPI) via compilar_grafo.
+    """
     g = StateGraph(EstadoRH)
     g.add_node("triagem", triagem)
     g.add_node("resposta_direta", resposta_direta)
@@ -496,6 +543,7 @@ def _construir_grafo():
     g.add_node("reescrever", reescrever)
     g.add_node("executar_tools", executar_tools)
     g.add_node("formatar_tool", formatar_tool)
+    g.add_node("finalizar", finalizar)
 
     # Triagem na entrada: fora de escopo responde direto; RH segue o fluxo.
     g.add_edge(START, "triagem")
@@ -504,7 +552,7 @@ def _construir_grafo():
         rota_apos_triagem,
         {"fora_de_escopo": "resposta_direta", "rh": "decidir_rota"},
     )
-    g.add_edge("resposta_direta", END)
+    g.add_edge("resposta_direta", "finalizar")
     g.add_conditional_edges(
         "decidir_rota",
         rota_apos_decisao,
@@ -512,21 +560,29 @@ def _construir_grafo():
     )
     # Rota informativa (política) com auto-correção: se a resposta não se
     # sustentou na base, reescrever normaliza a pergunta e realimenta recuperar
-    # (ciclo com teto de tentativas); caso contrário, encerra.
+    # (ciclo com teto de tentativas); caso contrário, encerra pelo nó terminal.
     g.add_edge("recuperar", "gerar")
     g.add_edge("gerar", "validar_fontes")
     g.add_conditional_edges(
         "validar_fontes",
         avaliar_resposta,
-        {"reescrever": "reescrever", "fim": END},
+        {"reescrever": "reescrever", "fim": "finalizar"},
     )
     g.add_edge("reescrever", "recuperar")
     # Rota de tool.
     g.add_edge("executar_tools", "formatar_tool")
-    g.add_edge("formatar_tool", END)
+    g.add_edge("formatar_tool", "finalizar")
+    # Nó terminal comum: registra o histórico e encerra o turno.
+    g.add_edge("finalizar", END)
 
-    return g.compile()
+    return g
 
 
-# Grafo compilado, pronto para invoke() (importado por app/chat.py).
-grafo = _construir_grafo()
+def compilar_grafo(checkpointer=None):
+    """Compila o grafo do fluxo, opcionalmente com um checkpointer.
+
+    Com um checkpointer (PostgresSaver), o estado passa a ser persistido por
+    thread (config["configurable"]["thread_id"]), dando memória de conversa
+    entre turnos. Sem ele, o grafo roda sem memória (comportamento anterior).
+    """
+    return montar_grafo().compile(checkpointer=checkpointer)

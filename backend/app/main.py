@@ -1,11 +1,15 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+import psycopg
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg.rows import dict_row
 
 from app import db, retrieval
 from app.chat import ChatRequest, responder
+from app.graph import compilar_grafo
 from app.schemas import DocumentoBase, RemocaoBase, RespostaRH, Solicitacao
 from app.tools import listar_solicitacoes
 
@@ -22,7 +26,25 @@ async def lifespan(app: FastAPI):
     # Garante a extensão pgvector antes de atender requisições, independente do
     # estado do volume do Postgres (volume novo ou pré-existente sem a extensão).
     db.garantir_extensao_vector()
-    yield
+
+    # Checkpointer da memória de conversa: uma conexão psycopg v3 dedicada,
+    # mantida viva por toda a aplicação. O PostgresSaver precisa de conexão
+    # persistente — from_conn_string com `with` fecharia a conexão por request.
+    # autocommit=True e row_factory=dict_row são requisitos do PostgresSaver.
+    conn = psycopg.connect(
+        db.get_dsn(),
+        autocommit=True,
+        prepare_threshold=0,
+        row_factory=dict_row,
+    )
+    checkpointer = PostgresSaver(conn)
+    checkpointer.setup()  # cria/migra as tabelas checkpoint* (idempotente)
+    # Grafo compilado com o checkpointer: só aqui, pois a compilação depende dele.
+    app.state.grafo = compilar_grafo(checkpointer)
+    try:
+        yield
+    finally:
+        conn.close()
 
 
 app = FastAPI(title="rh-assistant", version="0.1.0", lifespan=lifespan)
@@ -46,8 +68,10 @@ def health():
 
 
 @app.post("/api/chat", response_model=RespostaRH)
-def chat(req: ChatRequest) -> RespostaRH:
-    return responder(req)
+def chat(req: ChatRequest, request: Request) -> RespostaRH:
+    # Grafo compilado com o checkpointer é montado no lifespan e guardado em
+    # app.state; injeta-se aqui para a thread da conversa manter memória.
+    return responder(req, request.app.state.grafo)
 
 
 @app.get("/api/solicitacoes", response_model=list[Solicitacao])

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from app.graph import grafo
 from app.schemas import RespostaRH
 
 
@@ -19,6 +18,9 @@ from app.schemas import RespostaRH
 
 class ChatRequest(BaseModel):
     pergunta: str
+    # Identifica a conversa (thread) no checkpointer: mesmo id → mesma memória.
+    # O front gera um uuid por conversa e o reenvia em cada pergunta.
+    conversa_id: str
     # Quando ligado, o saldo consultado é validado contra o teto da política
     # (a tool sinaliza inconsistências). Controlado pela UI.
     validar_teto: bool = False
@@ -30,14 +32,30 @@ class ChatRequest(BaseModel):
 
 # --- Rota -------------------------------------------------------------------
 
-def responder(req: ChatRequest) -> RespostaRH:
+def responder(req: ChatRequest, grafo) -> RespostaRH:
+    """Invoca o grafo (compilado com checkpointer) para a thread da conversa.
+
+    O grafo compilado é injetado (montado no lifespan com o PostgresSaver), não
+    importado como singleton de módulo — a compilação depende do checkpointer.
+    """
     try:
         estado_final = grafo.invoke(
             {
                 "pergunta": req.pergunta,
                 "auto_corrigir": req.auto_corrigir,
                 "validar_teto": req.validar_teto,
-            }
+                # Reset explícito dos intermediários: o checkpointer persiste o
+                # estado da thread, então sem zerar estes campos valores do turno
+                # anterior vazariam para o atual. `mensagens` fica de fora de
+                # propósito — é o único campo que deve acumular (add_messages).
+                "categoria_triagem": "",
+                "consulta": "",
+                "tentativas": 0,
+                "ai_msg": None,
+                "chunks": [],
+                "tool_messages": [],
+            },
+            config={"configurable": {"thread_id": req.conversa_id}},
         )
         return estado_final["resposta"]
     except Exception as exc:  # ex.: sem ANTHROPIC_API_KEY, falha de rede/API

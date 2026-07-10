@@ -23,6 +23,9 @@ export default function App() {
   const [carregandoBase, setCarregandoBase] = useState(false)
   const [validarTeto, setValidarTeto] = useState(false)
   const [autoCorrigir, setAutoCorrigir] = useState(false)
+  // Identifica a conversa (thread) no backend: mesmo id → mesma memória.
+  // Gerado por conversa e reenviado em cada pergunta; renovado em "Nova conversa".
+  const [conversaId, setConversaId] = useState(() => crypto.randomUUID())
   const listaRef = useRef(null)
   const inputRef = useRef(null)
 
@@ -76,6 +79,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           pergunta: q,
+          conversa_id: conversaId,
           validar_teto: validarTeto,
           auto_corrigir: autoCorrigir,
         }),
@@ -120,6 +124,8 @@ export default function App() {
   function novaConversa() {
     setMensagens([])
     setPergunta('')
+    // Nova thread: renova o id para a memória do backend não misturar conversas.
+    setConversaId(crypto.randomUUID())
     inputRef.current?.focus()
   }
 
