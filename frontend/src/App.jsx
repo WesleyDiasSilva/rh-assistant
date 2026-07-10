@@ -12,15 +12,24 @@ const EXEMPLOS = [
   { titulo: 'Licenças', pergunta: 'Como funciona a licença-paternidade?', icone: 'heart' },
 ]
 
+// Destinos de navegação da sidebar. A área principal alterna por destino.
+const DESTINOS = [
+  { id: 'conversa', label: 'Conversa', icone: 'message' },
+  { id: 'base', label: 'Base de conhecimento', icone: 'book' },
+  { id: 'solicitacoes', label: 'Solicitações', icone: 'list' },
+]
+
 export default function App() {
+  const [view, setView] = useState('conversa')
   const [mensagens, setMensagens] = useState([])
   const [pergunta, setPergunta] = useState('')
   const [loading, setLoading] = useState(false)
+  const [hidratando, setHidratando] = useState(false)
   const [solicitacoes, setSolicitacoes] = useState([])
-  const [painelAberto, setPainelAberto] = useState(false)
-  const [painelBaseAberto, setPainelBaseAberto] = useState(false)
   const [documentosBase, setDocumentosBase] = useState([])
   const [carregandoBase, setCarregandoBase] = useState(false)
+  const [conversas, setConversas] = useState([])
+  const [carregandoConversas, setCarregandoConversas] = useState(false)
   const [validarTeto, setValidarTeto] = useState(false)
   const [autoCorrigir, setAutoCorrigir] = useState(false)
   // Identifica a conversa (thread) no backend: mesmo id → mesma memória.
@@ -33,7 +42,7 @@ export default function App() {
     if (listaRef.current) {
       listaRef.current.scrollTop = listaRef.current.scrollHeight
     }
-  }, [mensagens, loading])
+  }, [mensagens, loading, hidratando])
 
   async function carregarSolicitacoes() {
     try {
@@ -44,12 +53,20 @@ export default function App() {
     }
   }
 
-  useEffect(() => {
-    carregarSolicitacoes()
-  }, [])
+  // Lista as conversas registradas (aparecem após o 1º turno de cada uma).
+  async function carregarConversas() {
+    setCarregandoConversas(true)
+    try {
+      const r = await fetch(`${API_URL}/api/conversas`)
+      setConversas(await r.json())
+    } catch {
+      // silencioso: a listagem é auxiliar e não deve quebrar o chat.
+    } finally {
+      setCarregandoConversas(false)
+    }
+  }
 
-  // Carrega a base sob demanda (ao abrir o painel), espelhando o estado real do
-  // backend a cada abertura/operação.
+  // Carrega a base sob demanda, espelhando o estado real do backend.
   async function carregarBase() {
     setCarregandoBase(true)
     try {
@@ -62,9 +79,50 @@ export default function App() {
     }
   }
 
-  function abrirPainelBase() {
-    setPainelBaseAberto(true)
-    carregarBase()
+  useEffect(() => {
+    carregarSolicitacoes()
+    carregarConversas()
+  }, [])
+
+  function navegar(dest) {
+    setView(dest)
+    // Recarrega a listagem do destino ao entrar, para refletir o estado atual.
+    if (dest === 'base') carregarBase()
+    if (dest === 'solicitacoes') carregarSolicitacoes()
+  }
+
+  function novaConversa() {
+    setMensagens([])
+    setPergunta('')
+    // Nova thread: renova o id para a memória do backend não misturar conversas.
+    setConversaId(crypto.randomUUID())
+    setView('conversa')
+    requestAnimationFrame(() => inputRef.current?.focus())
+  }
+
+  // Abre uma conversa existente: hidrata o chat com o histórico e passa a usar
+  // aquele id — os próximos turnos continuam a memória daquele ponto.
+  async function selecionarConversa(id) {
+    setView('conversa')
+    if (id === conversaId && mensagens.length > 0) return
+    setHidratando(true)
+    try {
+      const r = await fetch(`${API_URL}/api/conversas/${id}`)
+      if (!r.ok) throw new Error('falha ao carregar histórico')
+      const historico = await r.json()
+      setConversaId(id)
+      setMensagens(
+        historico.map((m) => ({
+          autor: m.papel === 'usuario' ? 'user' : 'assistente',
+          texto: m.texto,
+        })),
+      )
+    } catch {
+      // silencioso: mantém a conversa atual se a hidratação falhar.
+    } finally {
+      setHidratando(false)
+      requestAnimationFrame(() => inputRef.current?.focus())
+    }
   }
 
   async function perguntar(texto) {
@@ -109,9 +167,11 @@ export default function App() {
       ])
     } finally {
       setLoading(false)
-      // Atualiza a listagem: se a resposta registrou uma solicitação, ela
-      // aparece sem ação manual. O botão "Atualizar" no painel é o reforço.
+      // Atualiza as listagens: a conversa recém-criada aparece na sidebar após
+      // o 1º turno (é quando o backend a registra) e uma eventual solicitação
+      // registrada aparece sem ação manual.
       carregarSolicitacoes()
+      carregarConversas()
       requestAnimationFrame(() => inputRef.current?.focus())
     }
   }
@@ -121,37 +181,224 @@ export default function App() {
     perguntar(pergunta)
   }
 
-  function novaConversa() {
-    setMensagens([])
-    setPergunta('')
-    // Nova thread: renova o id para a memória do backend não misturar conversas.
-    setConversaId(crypto.randomUUID())
-    inputRef.current?.focus()
-  }
-
-  const vazio = mensagens.length === 0
-
   return (
-    <div className="flex h-full flex-col bg-gradient-to-b from-slate-50 to-white text-slate-900">
-      <Header
-        onReset={novaConversa}
-        hasMessages={!vazio}
-        onAbrirPainel={() => setPainelAberto(true)}
-        onAbrirPainelBase={abrirPainelBase}
+    <div className="flex h-full bg-gradient-to-b from-slate-50 to-white text-slate-900">
+      <Sidebar
+        view={view}
+        onNavegar={navegar}
+        conversas={conversas}
+        carregandoConversas={carregandoConversas}
+        conversaAtivaId={conversaId}
+        onNovaConversa={novaConversa}
+        onSelecionarConversa={selecionarConversa}
         totalSolicitacoes={solicitacoes.length}
-        validarTeto={validarTeto}
-        onToggleValidarTeto={() => setValidarTeto((v) => !v)}
-        autoCorrigir={autoCorrigir}
-        onToggleAutoCorrigir={() => setAutoCorrigir((v) => !v)}
       />
 
-      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col overflow-hidden px-4 sm:px-6">
-        <div
-          ref={listaRef}
-          className="scroll-soft flex-1 space-y-6 overflow-y-auto py-8"
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {view === 'conversa' && (
+          <ChatView
+            mensagens={mensagens}
+            loading={loading}
+            hidratando={hidratando}
+            onPick={perguntar}
+            listaRef={listaRef}
+            inputRef={inputRef}
+            pergunta={pergunta}
+            onChangePergunta={setPergunta}
+            onSubmit={onSubmit}
+            validarTeto={validarTeto}
+            onToggleValidarTeto={() => setValidarTeto((v) => !v)}
+            autoCorrigir={autoCorrigir}
+            onToggleAutoCorrigir={() => setAutoCorrigir((v) => !v)}
+          />
+        )}
+        {view === 'base' && (
+          <BaseView
+            documentos={documentosBase}
+            carregando={carregandoBase}
+            onAtualizar={carregarBase}
+          />
+        )}
+        {view === 'solicitacoes' && (
+          <SolicitacoesView
+            solicitacoes={solicitacoes}
+            onAtualizar={carregarSolicitacoes}
+          />
+        )}
+      </main>
+    </div>
+  )
+}
+
+function Sidebar({
+  view,
+  onNavegar,
+  conversas,
+  carregandoConversas,
+  conversaAtivaId,
+  onNovaConversa,
+  onSelecionarConversa,
+  totalSolicitacoes,
+}) {
+  return (
+    <aside className="flex h-full w-72 shrink-0 flex-col border-r border-slate-200 bg-white/70 backdrop-blur">
+      <div className="flex items-center gap-3 px-4 py-4">
+        <Logo />
+        <div className="min-w-0 leading-tight">
+          <div className="truncate text-sm font-semibold text-slate-900">RH Assistant</div>
+          <div className="truncate text-[11px] text-slate-500">Políticas internas</div>
+        </div>
+      </div>
+
+      <div className="px-3">
+        <button
+          type="button"
+          onClick={onNovaConversa}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-violet-600 to-indigo-600 px-3 py-2 text-sm font-medium text-white shadow-sm shadow-violet-500/30 transition hover:brightness-110"
         >
-          {vazio ? (
-            <EstadoVazio onPick={perguntar} />
+          <Icone nome="plus" tiny />
+          Nova conversa
+        </button>
+      </div>
+
+      <nav className="mt-4 space-y-1 px-3">
+        {DESTINOS.map((d) => {
+          const ativo = view === d.id
+          return (
+            <button
+              key={d.id}
+              type="button"
+              onClick={() => onNavegar(d.id)}
+              className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition ${
+                ativo
+                  ? 'bg-violet-50 text-violet-700'
+                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+              }`}
+            >
+              <Icone nome={d.icone} tiny />
+              <span className="flex-1 text-left">{d.label}</span>
+              {d.id === 'solicitacoes' && totalSolicitacoes > 0 && (
+                <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-violet-100 px-1 text-[10px] font-semibold text-violet-700">
+                  {totalSolicitacoes}
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </nav>
+
+      <div className="mt-6 flex min-h-0 flex-1 flex-col px-3 pb-3">
+        <div className="px-1 pb-2 text-[11px] font-medium uppercase tracking-wide text-slate-400">
+          Conversas
+        </div>
+        <div className="scroll-soft -mx-1 flex-1 space-y-1 overflow-y-auto px-1">
+          {carregandoConversas ? (
+            <ConversasSkeleton />
+          ) : conversas.length === 0 ? (
+            <ConversasVazia />
+          ) : (
+            conversas.map((c) => {
+              const ativa = view === 'conversa' && c.id === conversaAtivaId
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => onSelecionarConversa(c.id)}
+                  className={`block w-full rounded-lg px-3 py-2 text-left transition ${
+                    ativa
+                      ? 'bg-violet-50 ring-1 ring-inset ring-violet-200'
+                      : 'hover:bg-slate-100'
+                  }`}
+                  title={c.titulo}
+                >
+                  <div
+                    className={`truncate text-sm ${
+                      ativa ? 'font-semibold text-violet-800' : 'font-medium text-slate-700'
+                    }`}
+                  >
+                    {c.titulo}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-slate-400">
+                    {formatarData(c.criada_em)}
+                  </div>
+                </button>
+              )
+            })
+          )}
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+function ConversasSkeleton() {
+  return (
+    <div className="space-y-1">
+      {[0, 1, 2, 3].map((i) => (
+        <div key={i} className="rounded-lg px-3 py-2">
+          <div className="h-3.5 w-3/4 animate-pulse rounded bg-slate-200" />
+          <div className="mt-1.5 h-2.5 w-2/5 animate-pulse rounded bg-slate-100" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ConversasVazia() {
+  return (
+    <p className="px-3 py-2 text-xs text-slate-400">
+      Nenhuma conversa ainda. Comece uma pergunta no chat.
+    </p>
+  )
+}
+
+function ChatView({
+  mensagens,
+  loading,
+  hidratando,
+  onPick,
+  listaRef,
+  inputRef,
+  pergunta,
+  onChangePergunta,
+  onSubmit,
+  validarTeto,
+  onToggleValidarTeto,
+  autoCorrigir,
+  onToggleAutoCorrigir,
+}) {
+  const vazio = mensagens.length === 0
+  return (
+    <>
+      <div className="flex items-center justify-between border-b border-slate-200/70 bg-white/70 px-4 py-3 backdrop-blur sm:px-6">
+        <div className="min-w-0 leading-tight">
+          <div className="truncate text-sm font-semibold text-slate-900">Conversa</div>
+          <div className="truncate text-[11px] text-slate-500">
+            Tire dúvidas sobre as políticas internas
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Toggle
+            ligado={validarTeto}
+            onToggle={onToggleValidarTeto}
+            label="Validar política"
+            titulo="Validar o saldo contra o teto da política"
+          />
+          <Toggle
+            ligado={autoCorrigir}
+            onToggle={onToggleAutoCorrigir}
+            label="Auto-correção"
+            titulo="Se a busca falhar, o sistema reescreve a pergunta e tenta novamente"
+          />
+        </div>
+      </div>
+
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col overflow-hidden px-4 sm:px-6">
+        <div ref={listaRef} className="scroll-soft flex-1 space-y-6 overflow-y-auto py-8">
+          {hidratando ? (
+            <LoadingBubble />
+          ) : vazio ? (
+            <EstadoVazio onPick={onPick} />
           ) : (
             mensagens.map((m, i) => <Mensagem key={i} m={m} />)
           )}
@@ -161,132 +408,38 @@ export default function App() {
         <Composer
           inputRef={inputRef}
           value={pergunta}
-          onChange={setPergunta}
+          onChange={onChangePergunta}
           onSubmit={onSubmit}
           loading={loading}
         />
-      </main>
-
-      <PainelSolicitacoes
-        aberto={painelAberto}
-        onFechar={() => setPainelAberto(false)}
-        solicitacoes={solicitacoes}
-        onAtualizar={carregarSolicitacoes}
-      />
-
-      <PainelBase
-        aberto={painelBaseAberto}
-        onFechar={() => setPainelBaseAberto(false)}
-        documentos={documentosBase}
-        carregando={carregandoBase}
-        onAtualizar={carregarBase}
-      />
-    </div>
+      </div>
+    </>
   )
 }
 
-function Header({
-  onReset,
-  hasMessages,
-  onAbrirPainel,
-  onAbrirPainelBase,
-  totalSolicitacoes,
-  validarTeto,
-  onToggleValidarTeto,
-  autoCorrigir,
-  onToggleAutoCorrigir,
-}) {
+function Toggle({ ligado, onToggle, label, titulo }) {
   return (
-    <header className="border-b border-slate-200/70 bg-white/70 backdrop-blur">
-      <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-4 py-3 sm:px-6">
-        <div className="flex min-w-0 items-center gap-3">
-          <Logo />
-          <div className="min-w-0 leading-tight">
-            <div className="truncate text-sm font-semibold text-slate-900">RH Assistant</div>
-            <div className="truncate text-[11px] text-slate-500">
-              Tire dúvidas sobre as políticas internas
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onToggleValidarTeto}
-            role="switch"
-            aria-checked={validarTeto}
-            className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
-            title="Validar o saldo contra o teto da política"
-          >
-            <span
-              className={`relative inline-block h-4 w-7 shrink-0 rounded-full transition-colors ${
-                validarTeto ? 'bg-violet-500' : 'bg-slate-300'
-              }`}
-            >
-              <span
-                className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
-                  validarTeto ? 'translate-x-3' : 'translate-x-0'
-                }`}
-              />
-            </span>
-            <span>Validar política</span>
-          </button>
-          <button
-            type="button"
-            onClick={onToggleAutoCorrigir}
-            role="switch"
-            aria-checked={autoCorrigir}
-            className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
-            title="Se a busca falhar, o sistema reescreve a pergunta e tenta novamente"
-          >
-            <span
-              className={`relative inline-block h-4 w-7 shrink-0 rounded-full transition-colors ${
-                autoCorrigir ? 'bg-violet-500' : 'bg-slate-300'
-              }`}
-            >
-              <span
-                className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
-                  autoCorrigir ? 'translate-x-3' : 'translate-x-0'
-                }`}
-              />
-            </span>
-            <span>Auto-correção</span>
-          </button>
-          <button
-            type="button"
-            onClick={onAbrirPainelBase}
-            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
-            title="Base de conhecimento"
-          >
-            <Icone nome="book" tiny />
-            Base
-          </button>
-          <button
-            type="button"
-            onClick={onAbrirPainel}
-            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
-            title="Solicitações registradas"
-          >
-            <Icone nome="list" tiny />
-            Solicitações
-            {totalSolicitacoes > 0 && (
-              <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-violet-100 px-1 text-[10px] font-semibold text-violet-700">
-                {totalSolicitacoes}
-              </span>
-            )}
-          </button>
-          {hasMessages && (
-            <button
-              type="button"
-              onClick={onReset}
-              className="shrink-0 whitespace-nowrap rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
-              title="Nova conversa"
-            >
-              Nova conversa
-            </button>
-          )}
-        </div>
-      </div>
-    </header>
+    <button
+      type="button"
+      onClick={onToggle}
+      role="switch"
+      aria-checked={ligado}
+      className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+      title={titulo}
+    >
+      <span
+        className={`relative inline-block h-4 w-7 shrink-0 rounded-full transition-colors ${
+          ligado ? 'bg-violet-500' : 'bg-slate-300'
+        }`}
+      >
+        <span
+          className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
+            ligado ? 'translate-x-3' : 'translate-x-0'
+          }`}
+        />
+      </span>
+      <span>{label}</span>
+    </button>
   )
 }
 
@@ -464,55 +617,32 @@ function formatarData(iso) {
   })
 }
 
-function PainelSolicitacoes({ aberto, onFechar, solicitacoes, onAtualizar }) {
+function SolicitacoesView({ solicitacoes, onAtualizar }) {
   return (
-    <>
-      {/* Overlay */}
-      <div
-        onClick={onFechar}
-        className={`fixed inset-0 z-20 bg-slate-900/20 backdrop-blur-sm transition-opacity ${
-          aberto ? 'opacity-100' : 'pointer-events-none opacity-0'
-        }`}
-      />
-      {/* Drawer */}
-      <aside
-        className={`fixed inset-y-0 right-0 z-30 flex w-full max-w-sm flex-col border-l border-slate-200 bg-white shadow-xl transition-transform duration-300 ${
-          aberto ? 'translate-x-0' : 'translate-x-full'
-        }`}
-      >
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-          <div className="leading-tight">
-            <div className="text-sm font-semibold text-slate-900">
-              Solicitações de férias
-            </div>
-            <div className="text-[11px] text-slate-500">
-              {solicitacoes.length}{' '}
-              {solicitacoes.length === 1 ? 'registro' : 'registros'}
-            </div>
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 sm:px-6">
+        <div className="leading-tight">
+          <div className="text-sm font-semibold text-slate-900">
+            Solicitações de férias
           </div>
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={onAtualizar}
-              className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
-              title="Atualizar lista"
-            >
-              <Icone nome="refresh" tiny />
-              Atualizar
-            </button>
-            <button
-              type="button"
-              onClick={onFechar}
-              className="flex h-7 w-7 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
-              title="Fechar"
-              aria-label="Fechar"
-            >
-              <Icone nome="close" tiny />
-            </button>
+          <div className="text-[11px] text-slate-500">
+            {solicitacoes.length}{' '}
+            {solicitacoes.length === 1 ? 'registro' : 'registros'}
           </div>
         </div>
+        <button
+          type="button"
+          onClick={onAtualizar}
+          className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+          title="Atualizar lista"
+        >
+          <Icone nome="refresh" tiny />
+          Atualizar
+        </button>
+      </div>
 
-        <div className="scroll-soft flex-1 space-y-2 overflow-y-auto p-4">
+      <div className="scroll-soft flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-2xl space-y-2 p-4 sm:p-6">
           {solicitacoes.length === 0 ? (
             <div className="mt-10 text-center text-sm text-slate-400">
               Nenhuma solicitação registrada ainda.
@@ -541,12 +671,12 @@ function PainelSolicitacoes({ aberto, onFechar, solicitacoes, onAtualizar }) {
             ))
           )}
         </div>
-      </aside>
-    </>
+      </div>
+    </div>
   )
 }
 
-function PainelBase({ aberto, onFechar, documentos, carregando, onAtualizar }) {
+function BaseView({ documentos, carregando, onAtualizar }) {
   const [arquivo, setArquivo] = useState(null)
   const [enviando, setEnviando] = useState(false)
   const [resultado, setResultado] = useState(null)
@@ -618,163 +748,142 @@ function PainelBase({ aberto, onFechar, documentos, carregando, onAtualizar }) {
   }
 
   return (
-    <>
-      {/* Overlay */}
-      <div
-        onClick={onFechar}
-        className={`fixed inset-0 z-20 bg-slate-900/20 backdrop-blur-sm transition-opacity ${
-          aberto ? 'opacity-100' : 'pointer-events-none opacity-0'
-        }`}
-      />
-      {/* Drawer */}
-      <aside
-        className={`fixed inset-y-0 right-0 z-30 flex w-full max-w-sm flex-col border-l border-slate-200 bg-white shadow-xl transition-transform duration-300 ${
-          aberto ? 'translate-x-0' : 'translate-x-full'
-        }`}
-      >
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-          <div className="leading-tight">
-            <div className="text-sm font-semibold text-slate-900">
-              Base de conhecimento
-            </div>
-            <div className="text-[11px] text-slate-500">
-              {documentos.length}{' '}
-              {documentos.length === 1 ? 'documento' : 'documentos'}
-            </div>
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 sm:px-6">
+        <div className="leading-tight">
+          <div className="text-sm font-semibold text-slate-900">
+            Base de conhecimento
           </div>
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={onAtualizar}
-              className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
-              title="Atualizar lista"
-            >
-              <Icone nome="refresh" tiny />
-              Atualizar
-            </button>
-            <button
-              type="button"
-              onClick={onFechar}
-              className="flex h-7 w-7 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
-              title="Fechar"
-              aria-label="Fechar"
-            >
-              <Icone nome="close" tiny />
-            </button>
+          <div className="text-[11px] text-slate-500">
+            {documentos.length}{' '}
+            {documentos.length === 1 ? 'documento' : 'documentos'}
           </div>
         </div>
+        <button
+          type="button"
+          onClick={onAtualizar}
+          className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+          title="Atualizar lista"
+        >
+          <Icone nome="refresh" tiny />
+          Atualizar
+        </button>
+      </div>
 
-        {/* Upload de novo documento */}
-        <div className="border-b border-slate-200 bg-slate-50/60 p-4">
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".md"
-            onChange={(e) => {
-              setArquivo(e.target.files?.[0] || null)
-              setErro(null)
-              setResultado(null)
-              setResultadoOn(false)
-            }}
-            className="block w-full text-xs text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-violet-50 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-violet-700 hover:file:bg-violet-100"
-          />
-          <button
-            type="button"
-            onClick={enviar}
-            disabled={!arquivo || enviando}
-            className="mt-2.5 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-br from-violet-600 to-indigo-600 px-3 py-2 text-xs font-medium text-white shadow-sm shadow-violet-500/30 transition hover:brightness-110 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-300 disabled:shadow-none"
-          >
-            {enviando ? (
-              <>
-                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                Indexando documento...
-              </>
-            ) : (
-              <>
-                <Icone nome="upload" tiny />
-                Adicionar documento
-              </>
-            )}
-          </button>
-          {resultado && (
-            <div
-              className={`mt-2.5 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-700 transition-all duration-300 ${
-                resultadoOn ? 'translate-y-0 opacity-100' : '-translate-y-1 opacity-0'
-              }`}
+      <div className="scroll-soft flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-2xl p-4 sm:p-6">
+          {/* Upload de novo documento */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".md"
+              onChange={(e) => {
+                setArquivo(e.target.files?.[0] || null)
+                setErro(null)
+                setResultado(null)
+                setResultadoOn(false)
+              }}
+              className="block w-full text-xs text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-violet-50 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-violet-700 hover:file:bg-violet-100"
+            />
+            <button
+              type="button"
+              onClick={enviar}
+              disabled={!arquivo || enviando}
+              className="mt-2.5 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-br from-violet-600 to-indigo-600 px-3 py-2 text-xs font-medium text-white shadow-sm shadow-violet-500/30 transition hover:brightness-110 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-300 disabled:shadow-none"
             >
-              <span className="text-emerald-600">
-                <Icone nome="check" tiny />
-              </span>
-              <span>{resultado}</span>
-            </div>
-          )}
-          {erro && (
-            <div className="animate-fade-up mt-2.5 flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-700">
-              <span className="text-rose-500">
-                <Icone nome="alert" tiny />
-              </span>
-              <span>{erro}</span>
-            </div>
-          )}
-        </div>
-
-        <div className="scroll-soft flex-1 space-y-2 overflow-y-auto p-4">
-          {carregando ? (
-            <BaseSkeleton />
-          ) : documentos.length === 0 ? (
-            <BaseVazia />
-          ) : (
-            documentos.map((d) => (
+              {enviando ? (
+                <>
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                  Indexando documento...
+                </>
+              ) : (
+                <>
+                  <Icone nome="upload" tiny />
+                  Adicionar documento
+                </>
+              )}
+            </button>
+            {resultado && (
               <div
-                key={d.arquivo}
-                className={`transition-all duration-200 ease-out ${
-                  removendo === d.arquivo
-                    ? 'translate-x-3 opacity-0'
-                    : 'translate-x-0 opacity-100'
+                className={`mt-2.5 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-700 transition-all duration-300 ${
+                  resultadoOn ? 'translate-y-0 opacity-100' : '-translate-y-1 opacity-0'
                 }`}
               >
-                <div className="animate-fade-up flex items-start justify-between gap-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="shrink-0 text-violet-500">
-                        <Icone nome="doc" tiny />
-                      </span>
-                      <span className="truncate text-sm font-semibold text-slate-800">
-                        {d.titulo || d.arquivo}
-                      </span>
-                    </div>
-                    <div className="mt-1 truncate font-mono text-[10px] text-slate-400">
-                      {d.arquivo}
-                    </div>
-                    <span className="mt-2 inline-flex items-center gap-1 rounded-md bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">
-                      <span className="h-1 w-1 rounded-full bg-violet-500" />
-                      {d.chunks} {d.chunks === 1 ? 'chunk' : 'chunks'}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setParaRemover({ arquivo: d.arquivo, titulo: d.titulo || d.arquivo })
-                    }
-                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
-                    title="Remover documento"
-                    aria-label={`Remover ${d.arquivo}`}
-                  >
-                    <Icone nome="trash" tiny />
-                  </button>
-                </div>
+                <span className="text-emerald-600">
+                  <Icone nome="check" tiny />
+                </span>
+                <span>{resultado}</span>
               </div>
-            ))
-          )}
+            )}
+            {erro && (
+              <div className="animate-fade-up mt-2.5 flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-700">
+                <span className="text-rose-500">
+                  <Icone nome="alert" tiny />
+                </span>
+                <span>{erro}</span>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-4 space-y-2">
+            {carregando ? (
+              <BaseSkeleton />
+            ) : documentos.length === 0 ? (
+              <BaseVazia />
+            ) : (
+              documentos.map((d) => (
+                <div
+                  key={d.arquivo}
+                  className={`transition-all duration-200 ease-out ${
+                    removendo === d.arquivo
+                      ? 'translate-x-3 opacity-0'
+                      : 'translate-x-0 opacity-100'
+                  }`}
+                >
+                  <div className="animate-fade-up flex items-start justify-between gap-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="shrink-0 text-violet-500">
+                          <Icone nome="doc" tiny />
+                        </span>
+                        <span className="truncate text-sm font-semibold text-slate-800">
+                          {d.titulo || d.arquivo}
+                        </span>
+                      </div>
+                      <div className="mt-1 truncate font-mono text-[10px] text-slate-400">
+                        {d.arquivo}
+                      </div>
+                      <span className="mt-2 inline-flex items-center gap-1 rounded-md bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">
+                        <span className="h-1 w-1 rounded-full bg-violet-500" />
+                        {d.chunks} {d.chunks === 1 ? 'chunk' : 'chunks'}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setParaRemover({ arquivo: d.arquivo, titulo: d.titulo || d.arquivo })
+                      }
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
+                      title="Remover documento"
+                      aria-label={`Remover ${d.arquivo}`}
+                    >
+                      <Icone nome="trash" tiny />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         </div>
-      </aside>
+      </div>
 
       <ModalConfirmacao
         item={paraRemover}
         onCancelar={() => setParaRemover(null)}
         onConfirmar={confirmarRemocao}
       />
-    </>
+    </div>
   )
 }
 
@@ -1084,6 +1193,18 @@ function Icone({ nome, tiny = false }) {
       return (
         <svg {...props}>
           <path d="M18 6L6 18M6 6l12 12" />
+        </svg>
+      )
+    case 'plus':
+      return (
+        <svg {...props}>
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+      )
+    case 'message':
+      return (
+        <svg {...props}>
+          <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
         </svg>
       )
     default:
