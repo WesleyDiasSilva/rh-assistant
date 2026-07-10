@@ -54,6 +54,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
@@ -342,17 +343,22 @@ def _validar_fontes(fontes: list[Fonte], chunks: list[Document]) -> list[Fonte]:
 
 # --- Nós --------------------------------------------------------------------
 
-def triagem(state: EstadoRH) -> EstadoRH:
+def triagem(state: EstadoRH, config: RunnableConfig) -> EstadoRH:
     """Classifica a pergunta em "rh" ou "fora_de_escopo" (chamada leve).
 
     Fail-open: qualquer falha na chamada classifica como "rh", para a triagem
     nunca derrubar uma pergunta legítima — na dúvida, segue o fluxo normal.
     """
+    # Ponto único por onde todo turno passa: registra o histórico que ENTRA
+    # neste turno (cresce 2 msgs/turno, o par gravado por finalizar no anterior).
+    historico = state.get("mensagens", [])
+    thread = config.get("configurable", {}).get("thread_id", "")
+    logger.info("[memoria] historico=%d mensagens thread=%s", len(historico), thread[:8])
     try:
         resultado = model_triagem.invoke(
             [
                 SystemMessage(content=SYSTEM_TRIAGEM),
-                *state.get("mensagens", []),
+                *historico,
                 HumanMessage(content=state["pergunta"]),
             ]
         )
