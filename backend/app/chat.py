@@ -5,14 +5,14 @@ O fluxo de decisão em si (decidir entre tool e política, retrieval, execução
 tools e formatação da resposta) mora em app/graph.py, modelado como um
 StateGraph. Aqui ficam só o contrato de entrada da API (ChatRequest) e a função
 responder(), que monta o estado inicial a partir do request, invoca o grafo
-compilado e devolve o RespostaRH do estado final.
+compilado e devolve o ChatResponse do estado final.
 """
 from __future__ import annotations
 
 from pydantic import BaseModel
 
 from app import conversas
-from app.schemas import RespostaRH
+from app.schemas import ChatResponse
 
 
 # --- Contrato de entrada da API ---------------------------------------------
@@ -33,7 +33,7 @@ class ChatRequest(BaseModel):
 
 # --- Rota -------------------------------------------------------------------
 
-def responder(req: ChatRequest, grafo) -> RespostaRH:
+def responder(req: ChatRequest, grafo) -> ChatResponse:
     """Invoca o grafo (compilado com checkpointer) para a thread da conversa.
 
     O grafo compilado é injetado (montado no lifespan com o PostgresSaver), não
@@ -49,21 +49,30 @@ def responder(req: ChatRequest, grafo) -> RespostaRH:
                 # estado da thread, então sem zerar estes campos valores do turno
                 # anterior vazariam para o atual. `mensagens` fica de fora de
                 # propósito — é o único campo que deve acumular (add_messages).
+                # `trajetoria` também é zerada: é rastro do turno, não da conversa.
                 "categoria_triagem": "",
                 "consulta": "",
                 "tentativas": 0,
                 "ai_msg": None,
                 "chunks": [],
                 "tool_messages": [],
+                "trajetoria": None,
             },
             config={"configurable": {"thread_id": req.conversa_id}},
         )
         # Registra o metadado da conversa no primeiro turno (no-op nos demais).
         # Fica na camada de API: título é metadado de produto, não estado do grafo.
         conversas.registrar_se_nova(req.conversa_id, req.pergunta)
-        return estado_final["resposta"]
+        r = estado_final["resposta"]
+        return ChatResponse(
+            resposta=r.resposta,
+            fontes=r.fontes,
+            categoria=r.categoria,
+            confianca=r.confianca,
+            trajetoria=estado_final.get("trajetoria", []),
+        )
     except Exception as exc:  # ex.: sem ANTHROPIC_API_KEY, falha de rede/API
-        return RespostaRH(
+        return ChatResponse(
             resposta=(
                 "Não consegui consultar o assistente agora. Verifique se a "
                 "ANTHROPIC_API_KEY está configurada e tente novamente. "
@@ -72,4 +81,5 @@ def responder(req: ChatRequest, grafo) -> RespostaRH:
             fontes=[],
             categoria="outro",
             confianca=0.0,
+            trajetoria=[],
         )

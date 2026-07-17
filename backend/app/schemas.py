@@ -40,6 +40,20 @@ class RespostaRH(BaseModel):
     )
 
 
+
+class ChatResponse(BaseModel):
+    """Resposta da rota /api/chat: campos da RespostaRH + trajetória do turno."""
+
+    resposta: str
+    fontes: list[Fonte] = Field(default_factory=list)
+    categoria: str
+    confianca: float = Field(ge=0.0, le=1.0)
+    trajetoria: list[str] = Field(
+        default_factory=list,
+        description="Sequência de nós percorridos pelo grafo neste turno.",
+    )
+
+
 class DocumentoBase(BaseModel):
     """Documento da base de conhecimento, agregado por arquivo."""
 

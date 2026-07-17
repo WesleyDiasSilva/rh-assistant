@@ -83,8 +83,8 @@ def health():
     return {"status": "ok", "db": "ok" if db_ok else "error"}
 
 
-@app.post("/api/chat", response_model=RespostaRH)
-def chat(req: ChatRequest, request: Request) -> RespostaRH:
+@app.post("/api/chat", response_model=ChatResponse)
+def chat(req: ChatRequest, request: Request) -> ChatResponse:
     # Grafo compilado com o checkpointer é montado no lifespan e guardado em
     # app.state; injeta-se aqui para a thread da conversa manter memória.
     return responder(req, request.app.state.grafo)

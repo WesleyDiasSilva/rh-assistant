@@ -58,6 +58,12 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+
+def _trajetoria_turno(antigo: list[str] | None, novo: list[str] | None) -> list[str]:
+    """Reducer da trajetória: acumula nós dentro do turno; None no novo = reset."""
+    if novo is None:
+        return []
+    return (antigo or []) + novo
 from pydantic import BaseModel, Field
 
 from app.retrieval import TOP_K, buscar
@@ -97,6 +103,8 @@ class EstadoRH(TypedDict, total=False):
     ai_msg: Any  # AIMessage da etapa de decisão (carrega os tool_calls)
     chunks: list[Document]  # chunks recuperados na rota informativa
     tool_messages: list[ToolMessage]  # resultados das tools na rota de tool
+    # Trajetória do turno (acumula por nó via reducer; zerada a cada turno via None)
+    trajetoria: Annotated[list[str], _trajetoria_turno]
     # Saída
     resposta: RespostaRH
 
@@ -419,7 +427,7 @@ def triagem(state: EstadoRH, config: RunnableConfig) -> EstadoRH:
     except Exception:
         categoria = "rh"
     logger.info("[triagem] pergunta=%r categoria=%s", state["pergunta"], categoria)
-    return {"categoria_triagem": categoria}
+    return {"categoria_triagem": categoria, "trajetoria": ["triagem"]}
 
 
 def rota_apos_triagem(state: EstadoRH) -> str:
@@ -455,7 +463,8 @@ def resposta_conversacional(state: EstadoRH) -> EstadoRH:
                 fontes=[],
                 categoria="outro",
                 confianca=1.0,
-            )
+            ),
+            "trajetoria": ["resposta_conversacional"],
         }
     msg = model.invoke(
         [
@@ -471,7 +480,8 @@ def resposta_conversacional(state: EstadoRH) -> EstadoRH:
             fontes=[],
             categoria="outro",
             confianca=1.0,
-        )
+        ),
+        "trajetoria": ["resposta_conversacional"],
     }
 
 
@@ -495,7 +505,7 @@ def resposta_direta(state: EstadoRH) -> EstadoRH:
         categoria="outro",
         confianca=1.0,
     )
-    return {"resposta": resposta}
+    return {"resposta": resposta, "trajetoria": ["resposta_direta"]}
 
 
 def decidir_rota(state: EstadoRH) -> EstadoRH:
@@ -511,7 +521,7 @@ def decidir_rota(state: EstadoRH) -> EstadoRH:
             HumanMessage(content=state["pergunta"]),
         ]
     )
-    return {"ai_msg": ai_msg}
+    return {"ai_msg": ai_msg, "trajetoria": ["decidir_rota"]}
 
 
 def rota_apos_decisao(state: EstadoRH) -> str:
@@ -535,7 +545,7 @@ def contextualizar(state: EstadoRH) -> EstadoRH:
     """
     mensagens = state.get("mensagens", [])
     if not mensagens:
-        return {"consulta": state["pergunta"]}
+        return {"consulta": state["pergunta"], "trajetoria": ["contextualizar"]}
     try:
         msg = model.invoke(
             [
@@ -550,7 +560,7 @@ def contextualizar(state: EstadoRH) -> EstadoRH:
     logger.info(
         "[contextualizar] original=%r consulta=%r", state["pergunta"], consulta
     )
-    return {"consulta": consulta}
+    return {"consulta": consulta, "trajetoria": ["contextualizar"]}
 
 
 def recuperar(state: EstadoRH) -> EstadoRH:
@@ -563,7 +573,7 @@ def recuperar(state: EstadoRH) -> EstadoRH:
     """
     consulta = state.get("consulta") or state["pergunta"]
     chunks = buscar(consulta, k=TOP_K)
-    return {"consulta": consulta, "chunks": chunks}
+    return {"consulta": consulta, "chunks": chunks, "trajetoria": ["recuperar"]}
 
 
 def gerar(state: EstadoRH) -> EstadoRH:
@@ -575,7 +585,7 @@ def gerar(state: EstadoRH) -> EstadoRH:
             "historico": state.get("mensagens", []),
         }
     )
-    return {"resposta": resposta}
+    return {"resposta": resposta, "trajetoria": ["gerar"]}
 
 
 def validar_fontes(state: EstadoRH) -> EstadoRH:
@@ -599,7 +609,7 @@ def validar_fontes(state: EstadoRH) -> EstadoRH:
         "retrieval informativo: pergunta=%r recuperados=%s citados=%s",
         state["pergunta"], recuperados, citados,
     )
-    return {"resposta": resposta}
+    return {"resposta": resposta, "trajetoria": ["validar_fontes"]}
 
 
 # Teto de tentativas de auto-correção: uma reescrita basta para tirar o ruído da
@@ -635,7 +645,7 @@ def reescrever(state: EstadoRH) -> EstadoRH:
         "[auto-correcao] tentativa=%d original=%r reescrita=%r",
         tentativas, state["pergunta"], consulta,
     )
-    return {"consulta": consulta, "tentativas": tentativas}
+    return {"consulta": consulta, "tentativas": tentativas, "trajetoria": ["reescrever"]}
 
 
 def executar_tools(state: EstadoRH) -> EstadoRH:
@@ -656,7 +666,7 @@ def executar_tools(state: EstadoRH) -> EstadoRH:
         tool_messages.append(
             ToolMessage(content=str(resultado), tool_call_id=call["id"])
         )
-    return {"tool_messages": tool_messages}
+    return {"tool_messages": tool_messages, "trajetoria": ["executar_tools"]}
 
 
 def formatar_tool(state: EstadoRH) -> EstadoRH:
@@ -669,7 +679,7 @@ def formatar_tool(state: EstadoRH) -> EstadoRH:
             *state["tool_messages"],
         ]
     )
-    return {"resposta": resposta}
+    return {"resposta": resposta, "trajetoria": ["formatar_tool"]}
 
 
 def finalizar(state: EstadoRH) -> EstadoRH:
@@ -690,7 +700,8 @@ def finalizar(state: EstadoRH) -> EstadoRH:
         "mensagens": [
             HumanMessage(content=state["pergunta"]),
             AIMessage(content=resposta.resposta),
-        ]
+        ],
+        "trajetoria": ["finalizar"],
     }
 
 
