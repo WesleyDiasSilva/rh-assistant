@@ -40,7 +40,6 @@ class RespostaRH(BaseModel):
     )
 
 
-
 class ChatResponse(BaseModel):
     """Resposta da rota /api/chat: campos da RespostaRH + trajetória do turno."""
 

@@ -19,47 +19,6 @@ const DESTINOS = [
   { id: 'solicitacoes', label: 'Solicitações', icone: 'list' },
 ]
 
-const COR_NO = {
-  triagem:                 'bg-violet-100 text-violet-700 border-violet-200',
-  decidir_rota:            'bg-violet-100 text-violet-700 border-violet-200',
-  executar_tools:          'bg-amber-100  text-amber-700  border-amber-200',
-  formatar_tool:           'bg-amber-100  text-amber-700  border-amber-200',
-  contextualizar:          'bg-sky-100    text-sky-700    border-sky-200',
-  recuperar:               'bg-sky-100    text-sky-700    border-sky-200',
-  gerar:                   'bg-sky-100    text-sky-700    border-sky-200',
-  validar_fontes:          'bg-sky-100    text-sky-700    border-sky-200',
-  reescrever:              'bg-sky-100    text-sky-700    border-sky-200',
-  resposta_direta:         'bg-emerald-100 text-emerald-700 border-emerald-200',
-  resposta_conversacional: 'bg-emerald-100 text-emerald-700 border-emerald-200',
-  finalizar:               'bg-slate-100  text-slate-600  border-slate-200',
-}
-
-function Trajetoria({ nos }) {
-  return (
-    <div className="mt-3 border-t border-slate-100 pt-3">
-      <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-        Trajetória
-      </div>
-      <div className="flex flex-wrap items-center gap-x-1 gap-y-1.5">
-        {nos.map((no, i) => (
-          <span key={i} className="inline-flex items-center gap-1">
-            <span
-              className={`inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[11px] font-medium ${
-                COR_NO[no] ?? 'bg-slate-100 text-slate-600 border-slate-200'
-              }`}
-            >
-              {no}
-            </span>
-            {i < nos.length - 1 && (
-              <span className="text-[11px] text-slate-400">→</span>
-            )}
-          </span>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 export default function App() {
   const [view, setView] = useState('conversa')
   const [mensagens, setMensagens] = useState([])
@@ -1118,6 +1077,52 @@ function Inline({ texto }) {
         return <span key={i}>{p}</span>
       })}
     </>
+  )
+}
+
+const COR_NO = {
+  triagem:                 'bg-violet-100 text-violet-700 border-violet-200',
+  classificar_tipo:        'bg-violet-100 text-violet-700 border-violet-200',
+  decidir_rota:            'bg-violet-100 text-violet-700 border-violet-200',
+  executar_tools:          'bg-amber-100  text-amber-700  border-amber-200',
+  formatar_tool:           'bg-amber-100  text-amber-700  border-amber-200',
+  contextualizar:          'bg-sky-100    text-sky-700    border-sky-200',
+  recuperar:               'bg-sky-100    text-sky-700    border-sky-200',
+  gerar:                   'bg-sky-100    text-sky-700    border-sky-200',
+  validar_fontes:          'bg-sky-100    text-sky-700    border-sky-200',
+  reescrever:              'bg-sky-100    text-sky-700    border-sky-200',
+  resposta_direta:         'bg-emerald-100 text-emerald-700 border-emerald-200',
+  resposta_conversacional: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  iniciar_hibrido:         'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200',
+  sub_politica:            'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200',
+  sub_dados:               'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200',
+  mesclar:                 'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200',
+  finalizar:               'bg-slate-100  text-slate-600  border-slate-200',
+}
+
+function Trajetoria({ nos }) {
+  return (
+    <div className="mt-3 border-t border-slate-100 pt-3">
+      <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
+        Trajetória
+      </div>
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-1.5">
+        {nos.map((no, i) => (
+          <span key={i} className="inline-flex items-center gap-1">
+            <span
+              className={`inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[11px] font-medium ${
+                COR_NO[no] ?? 'bg-slate-100 text-slate-600 border-slate-200'
+              }`}
+            >
+              {no}
+            </span>
+            {i < nos.length - 1 && (
+              <span className="text-[11px] text-slate-400">→</span>
+            )}
+          </span>
+        ))}
+      </div>
+    </div>
   )
 }
 

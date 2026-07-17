@@ -12,11 +12,11 @@ from app import conversas, db, retrieval
 from app.chat import ChatRequest, responder
 from app.graph import compilar_grafo
 from app.schemas import (
+    ChatResponse,
     Conversa,
     DocumentoBase,
     MensagemHistorico,
     RemocaoBase,
-    RespostaRH,
     Solicitacao,
 )
 from app.tools import listar_solicitacoes

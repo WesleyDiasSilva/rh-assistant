@@ -1,0 +1,53 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	triagem(triagem)
+	classificar_tipo(classificar_tipo)
+	resposta_conversacional(resposta_conversacional)
+	resposta_direta(resposta_direta)
+	decidir_rota(decidir_rota)
+	contextualizar(contextualizar)
+	recuperar(recuperar)
+	gerar(gerar)
+	validar_fontes(validar_fontes)
+	reescrever(reescrever)
+	executar_tools(executar_tools)
+	formatar_tool(formatar_tool)
+	iniciar_hibrido(iniciar_hibrido)
+	sub_politica(sub_politica)
+	sub_dados(sub_dados)
+	mesclar(mesclar)
+	finalizar(finalizar)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> triagem;
+	classificar_tipo -. &nbsp;politica&nbsp; .-> contextualizar;
+	classificar_tipo -. &nbsp;tool&nbsp; .-> decidir_rota;
+	classificar_tipo -. &nbsp;hibrida&nbsp; .-> iniciar_hibrido;
+	contextualizar --> recuperar;
+	decidir_rota -. &nbsp;informativo&nbsp; .-> contextualizar;
+	decidir_rota -. &nbsp;tool&nbsp; .-> executar_tools;
+	executar_tools --> formatar_tool;
+	formatar_tool --> finalizar;
+	gerar --> validar_fontes;
+	iniciar_hibrido --> sub_dados;
+	iniciar_hibrido --> sub_politica;
+	mesclar --> finalizar;
+	recuperar --> gerar;
+	reescrever --> recuperar;
+	resposta_conversacional --> finalizar;
+	resposta_direta --> finalizar;
+	sub_dados --> mesclar;
+	sub_politica --> mesclar;
+	triagem -. &nbsp;rh&nbsp; .-> classificar_tipo;
+	triagem -. &nbsp;conversacional&nbsp; .-> resposta_conversacional;
+	triagem -. &nbsp;fora_de_escopo&nbsp; .-> resposta_direta;
+	validar_fontes -. &nbsp;fim&nbsp; .-> finalizar;
+	validar_fontes -.-> reescrever;
+	finalizar --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

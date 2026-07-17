@@ -5,7 +5,7 @@ O fluxo de decisão em si (decidir entre tool e política, retrieval, execução
 tools e formatação da resposta) mora em app/graph.py, modelado como um
 StateGraph. Aqui ficam só o contrato de entrada da API (ChatRequest) e a função
 responder(), que monta o estado inicial a partir do request, invoca o grafo
-compilado e devolve o ChatResponse do estado final.
+compilado e devolve o RespostaRH do estado final.
 """
 from __future__ import annotations
 
@@ -51,11 +51,16 @@ def responder(req: ChatRequest, grafo) -> ChatResponse:
                 # propósito — é o único campo que deve acumular (add_messages).
                 # `trajetoria` também é zerada: é rastro do turno, não da conversa.
                 "categoria_triagem": "",
+                "tipo_consulta": "",
                 "consulta": "",
                 "tentativas": 0,
                 "ai_msg": None,
                 "chunks": [],
                 "tool_messages": [],
+                "pergunta_dados": "",
+                "pergunta_politica": "",
+                "resposta_politica": None,
+                "resposta_dados": None,
                 "trajetoria": None,
             },
             config={"configurable": {"thread_id": req.conversa_id}},

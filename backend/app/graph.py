@@ -10,32 +10,27 @@ do escopo antes de gastar retrieval/tools:
     START → triagem → (categoria?)
         ├── fora_de_escopo → resposta_direta → finalizar → END
         ├── conversacional → resposta_conversacional → finalizar → END
-        └── rh → decidir_rota → (tem tool_calls?)
-                ├── não → contextualizar → recuperar → gerar → validar_fontes → (sustentou?)
-                │         ├── não, e auto_corrigir e < 1 retry → reescrever → recuperar
-                │         └── sim, ou sem retry disponível → finalizar → END  (informativa)
-                └── sim → executar_tools → formatar_tool → finalizar → END    (rota de tool)
+        └── rh → classificar_tipo → (tipo?)
+                ├── politica → contextualizar → recuperar → gerar → validar_fontes → (sustentou?)
+                │              ├── não, e auto_corrigir e < 1 retry → reescrever → recuperar
+                │              └── sim, ou sem retry disponível → finalizar → END
+                ├── tool → decidir_rota → executar_tools → formatar_tool → finalizar → END
+                └── hibrida → iniciar_hibrido → [sub_politica ∥ sub_dados] → mesclar → finalizar → END
 
 O estado é persistido por conversa (thread) por um checkpointer (ver
 compilar_grafo): o campo `mensagens` acumula o histórico via add_messages e as
-quatro rotas convergem em finalizar, que registra o par (pergunta, resposta) do
-turno. Os nós triagem, decidir_rota, resposta_direta e gerar leem esse
-histórico; contextualizar o usa para resolver referências (pronomes/elipses) na
-consulta de busca.
+rotas convergem em finalizar, que registra o par (pergunta, resposta) do turno.
 
-0. triagem: classifica a pergunta em "rh" ou "fora_de_escopo" (saudações/small
-   talk = fora_de_escopo). Fora de escopo vai para resposta_direta, que responde
-   com educação dentro do papel do assistente, sem retrieval nem tools.
-1. decidir_rota (bind_tools): o modelo recebe a pergunta (com o histórico) e as
-   tools plugadas e decide. Sem tool → pergunta de política. Com tool(s) → executa.
-2a. Rota informativa: contextualizar resolve referências ao histórico numa
-    consulta autônoma; recuperar traz os chunks por similaridade e gerar formula
-    a resposta só com base neles. Se a resposta não se sustentou na base (nenhuma
-    fonte) e a auto-correção está ligada, o nó reescrever normaliza a pergunta e o
-    ciclo tenta uma única vez mais (teto de tentativas garante terminação) — a
-    reescrita é reação a falha, não pré-processamento.
-2b. Rota de tool: executa cada tool pedida e devolve o resultado ao modelo, que
-    formata a resposta final.
+0. triagem: classifica a mensagem em "rh", "fora_de_escopo" ou "conversacional".
+1. classificar_tipo: para perguntas de RH, distingue "tool" (dado de funcionário),
+   "politica" (regra/norma) e "hibrida" (ambos). Na rota híbrida, decompõe a
+   pergunta em duas sub-perguntas independentes (pergunta_dados, pergunta_politica).
+2a. Rota política (contextualizar→recuperar→gerar→validar_fontes): RAG com
+    auto-correção opcional (reescrever→recuperar, teto de 1 tentativa).
+2b. Rota tool (decidir_rota→executar_tools→formatar_tool): tool calling.
+2c. Rota híbrida (iniciar_hibrido→[sub_politica∥sub_dados]→mesclar): os dois
+    ramos correm em paralelo (edges estáticas) e convergem em mesclar, que une
+    as respostas via template. Auto-correção inativa no ramo híbrido.
 
 Nota sobre tool calling + structured output: with_structured_output já é
 implementado forçando uma tool call para o schema RespostaRH, o que conflita com
@@ -58,6 +53,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+
 
 def _trajetoria_turno(antigo: list[str] | None, novo: list[str] | None) -> list[str]:
     """Reducer da trajetória: acumula nós dentro do turno; None no novo = reset."""
@@ -97,12 +93,18 @@ class EstadoRH(TypedDict, total=False):
     # Histórico da conversa (acumula via add_messages; persistido por thread)
     mensagens: Annotated[list, add_messages]
     # Intermediários
-    categoria_triagem: str  # "rh" ou "fora_de_escopo" (definido pelo nó triagem)
+    categoria_triagem: str  # "rh", "fora_de_escopo" ou "conversacional"
+    tipo_consulta: str  # "tool", "politica" ou "hibrida" (definido por classificar_tipo)
     consulta: str  # pergunta usada na busca/geração (reescrita, após auto-correção)
     tentativas: int  # nº de reescritas já feitas (teto para a auto-correção terminar)
     ai_msg: Any  # AIMessage da etapa de decisão (carrega os tool_calls)
     chunks: list[Document]  # chunks recuperados na rota informativa
     tool_messages: list[ToolMessage]  # resultados das tools na rota de tool
+    # Rota híbrida: sub-perguntas decompostas e respostas parciais dos dois ramos
+    pergunta_dados: str      # sub-pergunta sobre dado individual (rota híbrida)
+    pergunta_politica: str   # sub-pergunta sobre regra/política (rota híbrida)
+    resposta_politica: RespostaRH | None  # resultado do ramo de política
+    resposta_dados: RespostaRH | None     # resultado do ramo de dados
     # Trajetória do turno (acumula por nó via reducer; zerada a cada turno via None)
     trajetoria: Annotated[list[str], _trajetoria_turno]
     # Saída
@@ -288,6 +290,31 @@ SYSTEM_RESPOSTA_CONVERSACIONAL = (
     "'pelo que entendi'), sem repetir o turno anterior completo."
 )
 
+# Classificação do tipo de consulta de RH: distingue se exige tool (dado
+# individual), retrieval (política) ou ambos (híbrida). Na rota híbrida o modelo
+# também decompõe a pergunta em duas sub-perguntas independentes.
+SYSTEM_CLASSIFICAR = (
+    "Você classifica perguntas de RH em três tipos:\n\n"
+    "- \"tool\": exige consultar um dado individual de um funcionário (saldo de "
+    "férias, registro de solicitação de férias) — ex.: 'quantos dias a Ana tem?', "
+    "'quero solicitar 5 dias de férias em julho'.\n"
+    "- \"politica\": exige explicar uma regra ou política interna — ex.: 'quais "
+    "os períodos permitidos?', 'como funciona o parcelamento de férias?', "
+    "'quantos dias tenho direito?'.\n"
+    "- \"hibrida\": exige TANTO consultar um dado individual QUANTO explicar uma "
+    "regra — ex.: 'quantos dias a Ana tem e qual a regra para parcelar as férias?'.\n\n"
+    "Quando tipo='hibrida', decomponha em duas sub-perguntas:\n"
+    "- pergunta_dados: a parte sobre o dado individual (ex.: 'quantos dias de "
+    "férias a Ana tem de saldo?').\n"
+    "- pergunta_politica: a parte sobre a regra (ex.: 'qual a regra para "
+    "parcelar as férias?').\n"
+    "Quando tipo != 'hibrida', deixe pergunta_dados e pergunta_politica em branco.\n\n"
+    "Regras de desempate:\n"
+    "- Dúvida entre 'tool' e 'hibrida' → 'hibrida'.\n"
+    "- Dúvida entre 'politica' e 'hibrida' → 'hibrida'.\n"
+    "- Dúvida entre 'tool' e 'politica' → 'politica'."
+)
+
 # Resposta direta ao que a triagem barrou: mantém o usuário dentro do papel do
 # assistente, sem inventar informação de RH nem acionar retrieval/tools.
 SYSTEM_RESPOSTA_DIRETA = (
@@ -326,6 +353,32 @@ class _Triagem(BaseModel):
     )
 
 
+class _TipoConsulta(BaseModel):
+    """Saída estruturada do classificador de tipo de consulta RH."""
+
+    tipo: Literal["tool", "politica", "hibrida"] = Field(
+        description=(
+            "'tool' para dado individual de funcionário; "
+            "'politica' para regra/norma; "
+            "'hibrida' quando exige ambos."
+        )
+    )
+    pergunta_dados: str = Field(
+        default="",
+        description=(
+            "Sub-pergunta sobre o dado individual. "
+            "Preenchida apenas quando tipo='hibrida'."
+        ),
+    )
+    pergunta_politica: str = Field(
+        default="",
+        description=(
+            "Sub-pergunta sobre a regra ou política. "
+            "Preenchida apenas quando tipo='hibrida'."
+        ),
+    )
+
+
 # --- Modelo, tools e chains -------------------------------------------------
 
 model = ChatAnthropic(model="claude-haiku-4-5", temperature=0)
@@ -340,6 +393,9 @@ model_estruturado = model.with_structured_output(RespostaRH)
 
 # Triagem: chamada leve que devolve só a categoria (rh / fora_de_escopo).
 model_triagem = model.with_structured_output(_Triagem)
+
+# Classificação do tipo de consulta RH: tool / politica / hibrida.
+model_classificar = model.with_structured_output(_TipoConsulta)
 
 # Chain de política (sem tool): prompt com contexto | saída estruturada.
 chain = prompt | model_estruturado
@@ -438,6 +494,174 @@ def rota_apos_triagem(state: EstadoRH) -> str:
     if c == "conversacional":
         return "conversacional"
     return "rh"
+
+
+def classificar_tipo(state: EstadoRH) -> EstadoRH:
+    """Distingue 'tool', 'politica' ou 'hibrida' para perguntas de RH.
+
+    Fail-open: qualquer falha na chamada classifica como 'politica', para não
+    bloquear o fluxo — a rota de política é a mais conservadora.
+    Na rota híbrida, o modelo decompõe a pergunta em duas sub-perguntas
+    independentes (pergunta_dados, pergunta_politica).
+    """
+    try:
+        resultado = model_classificar.invoke(
+            [
+                SystemMessage(content=SYSTEM_CLASSIFICAR),
+                *state.get("mensagens", []),
+                HumanMessage(content=state["pergunta"]),
+            ]
+        )
+        tipo = resultado.tipo
+        pergunta_dados = resultado.pergunta_dados or state["pergunta"]
+        pergunta_politica = resultado.pergunta_politica or state["pergunta"]
+    except Exception:
+        tipo = "politica"
+        pergunta_dados = state["pergunta"]
+        pergunta_politica = state["pergunta"]
+    logger.info(
+        "[classificar_tipo] pergunta=%r tipo=%s", state["pergunta"], tipo
+    )
+    return {
+        "tipo_consulta": tipo,
+        "pergunta_dados": pergunta_dados,
+        "pergunta_politica": pergunta_politica,
+        "trajetoria": ["classificar_tipo"],
+    }
+
+
+def rota_apos_classificar(state: EstadoRH) -> str:
+    """Aresta condicional: encaminha para tool, política ou fan-out híbrido."""
+    return state.get("tipo_consulta", "politica")
+
+
+def iniciar_hibrido(state: EstadoRH) -> EstadoRH:
+    """Nó passagem que dispara os dois ramos paralelos via edges estáticas."""
+    return {"trajetoria": ["iniciar_hibrido"]}
+
+
+def sub_politica(state: EstadoRH) -> EstadoRH:
+    """Ramo paralelo híbrido — RAG com a sub-pergunta de política.
+
+    Executa o pipeline completo (contextualizar → recuperar → gerar →
+    validar_fontes) inline, sem ciclo de auto-correção. Escreve em
+    resposta_politica, não em resposta, para não conflitar com sub_dados.
+    """
+    pergunta = state.get("pergunta_politica") or state["pergunta"]
+    mensagens = state.get("mensagens", [])
+    # Contextualizar
+    if mensagens:
+        try:
+            msg = model.invoke(
+                [
+                    SystemMessage(content=SYSTEM_CONTEXTUALIZAR),
+                    *mensagens,
+                    HumanMessage(content=pergunta),
+                ]
+            )
+            consulta = (msg.content or "").strip() or pergunta
+        except Exception:
+            consulta = pergunta
+    else:
+        consulta = pergunta
+    logger.info("[sub_politica] consulta=%r", consulta)
+    # Recuperar
+    chunks = buscar(consulta, k=TOP_K)
+    # Gerar
+    resposta = chain.invoke(
+        {
+            "contexto": _formatar_contexto(chunks),
+            "pergunta": consulta,
+            "historico": mensagens,
+        }
+    )
+    # Validar fontes
+    resposta.fontes = _validar_fontes(resposta.fontes, chunks)
+    logger.info(
+        "[sub_politica] fontes=%s", [f.arquivo for f in resposta.fontes]
+    )
+    return {"resposta_politica": resposta, "trajetoria": ["sub_politica"]}
+
+
+def sub_dados(state: EstadoRH) -> EstadoRH:
+    """Ramo paralelo híbrido — tool calling com a sub-pergunta de dados.
+
+    Executa decide → tool(s) → formata inline. Escreve em resposta_dados,
+    não em resposta, para não conflitar com sub_politica.
+    """
+    pergunta = state.get("pergunta_dados") or state["pergunta"]
+    mensagens = state.get("mensagens", [])
+    ai_msg = model_com_tools.invoke(
+        [
+            SystemMessage(content=SYSTEM_DECISAO),
+            *mensagens,
+            HumanMessage(content=pergunta),
+        ]
+    )
+    if not ai_msg.tool_calls:
+        logger.info("[sub_dados] sem tool_calls para %r", pergunta)
+        return {
+            "resposta_dados": RespostaRH(
+                resposta="Não foi possível consultar os dados.",
+                fontes=[],
+                categoria="outro",
+                confianca=0.0,
+            ),
+            "trajetoria": ["sub_dados"],
+        }
+    tool_messages: list[ToolMessage] = []
+    for call in ai_msg.tool_calls:
+        tool = TOOLS_POR_NOME.get(call["name"])
+        resultado = (
+            tool.invoke(call["args"]) if tool else "Ferramenta desconhecida"
+        )
+        if state.get("validar_teto") and call["name"] == "consultar_saldo_ferias":
+            alerta = alerta_teto(call["args"].get("funcionario", ""))
+            if alerta:
+                resultado = f"{resultado} {alerta}"
+        tool_messages.append(
+            ToolMessage(content=str(resultado), tool_call_id=call["id"])
+        )
+    resposta = model_estruturado.invoke(
+        [
+            SystemMessage(content=SYSTEM_FORMATA_TOOL),
+            HumanMessage(content=pergunta),
+            ai_msg,
+            *tool_messages,
+        ]
+    )
+    logger.info("[sub_dados] categoria=%s confianca=%s", resposta.categoria, resposta.confianca)
+    return {"resposta_dados": resposta, "trajetoria": ["sub_dados"]}
+
+
+def mesclar(state: EstadoRH) -> EstadoRH:
+    """Nó de junção: une as respostas dos dois ramos paralelos via template.
+
+    Categoria herdada da resposta de política (fallback 'outro').
+    Confiança = menor das duas respostas (mais conservador).
+    Fontes = somente as da política (dados vêm de sistema interno).
+    """
+    pol = state.get("resposta_politica")
+    dad = state.get("resposta_dados")
+    partes = []
+    if dad and dad.resposta:
+        partes.append(f"**Dados consultados:**\n{dad.resposta}")
+    if pol and pol.resposta:
+        partes.append(f"**Regras da política:**\n{pol.resposta}")
+    texto = "\n\n".join(partes) if partes else "Não foi possível obter as informações."
+    categoria = (pol.categoria if pol else None) or (dad.categoria if dad else None) or "outro"
+    confianças = [r.confianca for r in [pol, dad] if r is not None]
+    confianca = min(confianças) if confianças else 0.0
+    fontes = pol.fontes if pol else []
+    return {
+        "resposta": RespostaRH(
+            resposta=texto,
+            fontes=fontes,
+            categoria=categoria,
+            confianca=confianca,
+        ),
+        "trajetoria": ["mesclar"],
+    }
 
 
 _SEM_HISTORICO = (
@@ -715,6 +939,7 @@ def montar_grafo() -> StateGraph:
     """
     g = StateGraph(EstadoRH)
     g.add_node("triagem", triagem)
+    g.add_node("classificar_tipo", classificar_tipo)
     g.add_node("resposta_conversacional", resposta_conversacional)
     g.add_node("resposta_direta", resposta_direta)
     g.add_node("decidir_rota", decidir_rota)
@@ -725,9 +950,14 @@ def montar_grafo() -> StateGraph:
     g.add_node("reescrever", reescrever)
     g.add_node("executar_tools", executar_tools)
     g.add_node("formatar_tool", formatar_tool)
+    g.add_node("iniciar_hibrido", iniciar_hibrido)
+    g.add_node("sub_politica", sub_politica)
+    g.add_node("sub_dados", sub_dados)
+    g.add_node("mesclar", mesclar)
     g.add_node("finalizar", finalizar)
 
-    # Triagem na entrada: fora de escopo responde direto; RH segue o fluxo.
+    # Triagem na entrada: fora de escopo/conversacional respondem diretamente;
+    # RH passa pelo classificador de tipo antes de seguir o fluxo.
     g.add_edge(START, "triagem")
     g.add_conditional_edges(
         "triagem",
@@ -735,20 +965,30 @@ def montar_grafo() -> StateGraph:
         {
             "fora_de_escopo": "resposta_direta",
             "conversacional": "resposta_conversacional",
-            "rh": "decidir_rota",
+            "rh": "classificar_tipo",
         },
     )
     g.add_edge("resposta_conversacional", "finalizar")
     g.add_edge("resposta_direta", "finalizar")
+    # Classificador: ramifica para política, tool ou fan-out híbrido.
+    g.add_conditional_edges(
+        "classificar_tipo",
+        rota_apos_classificar,
+        {
+            "politica": "contextualizar",
+            "tool": "decidir_rota",
+            "hibrida": "iniciar_hibrido",
+        },
+    )
+    # Rota de tool pura.
     g.add_conditional_edges(
         "decidir_rota",
         rota_apos_decisao,
         {"informativo": "contextualizar", "tool": "executar_tools"},
     )
-    # Rota informativa (política): contextualiza a consulta (resolve o histórico)
-    # antes da busca. Com auto-correção, se a resposta não se sustentou na base,
-    # reescrever normaliza a pergunta e realimenta recuperar (ciclo com teto de
-    # tentativas); caso contrário, encerra pelo nó terminal.
+    g.add_edge("executar_tools", "formatar_tool")
+    g.add_edge("formatar_tool", "finalizar")
+    # Rota política (RAG): com ciclo de auto-correção opcional.
     g.add_edge("contextualizar", "recuperar")
     g.add_edge("recuperar", "gerar")
     g.add_edge("gerar", "validar_fontes")
@@ -758,9 +998,11 @@ def montar_grafo() -> StateGraph:
         {"reescrever": "reescrever", "fim": "finalizar"},
     )
     g.add_edge("reescrever", "recuperar")
-    # Rota de tool.
-    g.add_edge("executar_tools", "formatar_tool")
-    g.add_edge("formatar_tool", "finalizar")
+    # Rota híbrida: fan-out paralelo via edges estáticas + barreira de junção.
+    g.add_edge("iniciar_hibrido", "sub_politica")
+    g.add_edge("iniciar_hibrido", "sub_dados")
+    g.add_edge(["sub_politica", "sub_dados"], "mesclar")
+    g.add_edge("mesclar", "finalizar")
     # Nó terminal comum: registra o histórico e encerra o turno.
     g.add_edge("finalizar", END)
 
