@@ -7,9 +7,10 @@ agora cada etapa é um nó explícito de um StateGraph, com o estado fluindo ent
 eles em vez de variáveis locais. Uma triagem na entrada desvia o que está fora
 do escopo antes de gastar retrieval/tools:
 
-    START → triagem → (é assunto de RH?)
-        ├── não → resposta_direta → finalizar → END           (fora de escopo)
-        └── sim → decidir_rota → (tem tool_calls?)
+    START → triagem → (categoria?)
+        ├── fora_de_escopo → resposta_direta → finalizar → END
+        ├── conversacional → resposta_conversacional → finalizar → END
+        └── rh → decidir_rota → (tem tool_calls?)
                 ├── não → contextualizar → recuperar → gerar → validar_fontes → (sustentou?)
                 │         ├── não, e auto_corrigir e < 1 retry → reescrever → recuperar
                 │         └── sim, ou sem retry disponível → finalizar → END  (informativa)
@@ -17,7 +18,7 @@ do escopo antes de gastar retrieval/tools:
 
 O estado é persistido por conversa (thread) por um checkpointer (ver
 compilar_grafo): o campo `mensagens` acumula o histórico via add_messages e as
-três rotas convergem em finalizar, que registra o par (pergunta, resposta) do
+quatro rotas convergem em finalizar, que registra o par (pergunta, resposta) do
 turno. Os nós triagem, decidir_rota, resposta_direta e gerar leem esse
 histórico; contextualizar o usa para resolver referências (pronomes/elipses) na
 consulta de busca.
@@ -212,23 +213,71 @@ SYSTEM_CONTEXTUALIZAR = (
 # antes de gastar retrieval/tools, respondendo direto e com educação.
 SYSTEM_TRIAGEM = (
     "Você é a triagem de um assistente de RH interno. Classifique a mensagem do "
-    "usuário em uma de duas categorias:\n"
-    "- \"rh\": qualquer assunto de recursos humanos da empresa — políticas "
-    "(férias, home-office, benefícios, reembolso, horário, licenças), saldo de "
-    "férias de um funcionário ou solicitação/agendamento de férias.\n"
-    "- \"fora_de_escopo\": saudações e conversa fiada (small talk) e temas "
-    "claramente alheios ao trabalho (clima, piadas, esportes, notícias).\n\n"
-    "Qualquer pergunta sobre temas de trabalho, empresa, escritório ou condições "
-    "de trabalho é \"rh\", MESMO que o assunto pareça incomum. Na dúvida entre as "
-    "duas, classifique como \"rh\" — o fluxo normal sabe recusar o que não está "
-    "na base.\n\n"
-    "Exemplos:\n"
+    "usuário em UMA de três categorias:\n\n"
+    "- \"rh\": qualquer pergunta cuja resposta envolva política, regra ou dado "
+    "de funcionário — férias, home-office, benefícios, reembolso, horário, "
+    "licenças, saldo de férias, solicitação de férias. É \"rh\" MESMO que o "
+    "tema já tenha sido respondido neste thread e MESMO que seja repetição "
+    "literal da pergunta anterior. Consulta se refaz na fonte, não na conversa.\n"
+    "- \"fora_de_escopo\": saudações, conversa fiada (small talk) e temas "
+    "claramente alheios ao trabalho (clima, piadas, esportes, notícias). "
+    "Inclui cumprimentos com menção à conversa (ex.: \"oi, você se lembra do "
+    "que falamos?\") — small talk prevalece sobre recall.\n"
+    "- \"conversacional\": EXCLUSIVAMENTE perguntas sobre a própria conversa — "
+    "o que foi dito, quem foi mencionado, como algo foi formulado. NÃO é "
+    "\"conversacional\" se a resposta exigir acessar política, regra ou dado "
+    "de funcionário, mesmo que o dado já tenha aparecido no histórico. "
+    "Recall relembra a conversa; consulta se refaz na fonte.\n\n"
+    "Regras de desempate:\n"
+    "- Dúvida entre \"rh\" e \"conversacional\" → SEMPRE \"rh\".\n"
+    "- Dúvida entre \"fora_de_escopo\" e \"conversacional\" → \"fora_de_escopo\".\n"
+    "- Qualquer pergunta sobre temas de trabalho, empresa ou condições de "
+    "trabalho é \"rh\", MESMO que o assunto pareça incomum.\n\n"
+    "Exemplos — rh:\n"
     "- \"quero solicitar férias\" → rh\n"
     "- \"quantos dias a Ana tem?\" → rh\n"
+    "- \"e quantos dias eu tenho direito a férias?\" → rh (regra de política)\n"
     "- \"posso trazer meu cachorro pro escritório?\" → rh\n"
+    "- \"quantos dias a Ana tem?\" [perguntado de novo na mesma conversa] → rh "
+    "(repetição literal de consulta de dado — refaz na fonte)\n"
+    "- \"e ela pode tirar tudo de uma vez?\" [após resposta sobre saldo] → rh "
+    "(pergunta sobre regra de política, não sobre o que foi dito)\n\n"
+    "Exemplos — fora_de_escopo:\n"
     "- \"qual a previsão do tempo?\" → fora_de_escopo\n"
     "- \"oi, tudo bem?\" → fora_de_escopo\n"
-    "- \"me conta uma piada\" → fora_de_escopo"
+    "- \"me conta uma piada\" → fora_de_escopo\n\n"
+    "Exemplos — conversacional:\n"
+    "- \"de quem estamos falando mesmo?\" → conversacional (só o nome, não dado)\n"
+    "- \"qual era o nome da pessoa mesmo?\" → conversacional\n"
+    "- \"você pode repetir o que disse antes?\" → conversacional\n"
+    "- \"e quantos dias ela tinha mesmo?\" → conversacional (confirma o número "
+    "JÁ DITO pelo assistente, não acessa o sistema)\n"
+    "ATENÇÃO: \"e quantos dias ela tinha mesmo?\" é conversacional APENAS "
+    "quando o assistente já respondeu o saldo nesta conversa e o usuário quer "
+    "confirmação do número já dito. Se não houver resposta anterior com o saldo, "
+    "é \"rh\"."
+)
+
+# Resposta conversacional: responde a partir do histórico da conversa, sem
+# retrieval nem tools. Usado quando a triagem detecta recall explícito do turno
+# anterior (ex.: "de quem estamos falando?", "qual era o saldo dela mesmo?").
+SYSTEM_RESPOSTA_CONVERSACIONAL = (
+    "Você é um assistente de RH interno da empresa. O usuário quer confirmar "
+    "algo que o assistente já disse nesta conversa — um nome, um número ou "
+    "uma informação presente no histórico acima.\n\n"
+    "Tempo verbal: 'tinha', 'tem', 'era' e 'é' são variações do mesmo dado. "
+    "Se o histórico registra 'X dias disponíveis' e o usuário pergunta quantos "
+    "dias 'ela tinha', responda com o valor registrado ('X dias') — o tempo "
+    "verbal não muda o dado, apenas o enquadramento da pergunta.\n\n"
+    "REGRA DE EXTRAÇÃO: use APENAS o que está escrito no histórico. "
+    "É PROIBIDO deduzir, calcular ou inferir números que não apareçam "
+    "textualmente (ex.: não calcule total a partir de parcial, não subtraia "
+    "nem some valores não mencionados). Copie o valor exato; não reinterprete.\n\n"
+    "Se o dado pedido NÃO estiver no histórico, diga: "
+    "'Essa informação não está na conversa. Poderia reformular a pergunta?' "
+    "Não invente nem complete com conhecimento externo.\n\n"
+    "Responda de forma breve e direta, sem ressalvas ('acredito que', "
+    "'pelo que entendi'), sem repetir o turno anterior completo."
 )
 
 # Resposta direta ao que a triagem barrou: mantém o usuário dentro do papel do
@@ -260,8 +309,12 @@ prompt = ChatPromptTemplate.from_messages(
 class _Triagem(BaseModel):
     """Saída estruturada da triagem: um único campo com a categoria da pergunta."""
 
-    categoria: Literal["rh", "fora_de_escopo"] = Field(
-        description="'rh' se for assunto de RH da empresa; 'fora_de_escopo' caso contrário."
+    categoria: Literal["rh", "fora_de_escopo", "conversacional"] = Field(
+        description=(
+            "'rh' se for assunto de RH da empresa; "
+            "'fora_de_escopo' para saudações e small talk; "
+            "'conversacional' para recall explícito do histórico da conversa."
+        )
     )
 
 
@@ -370,8 +423,56 @@ def triagem(state: EstadoRH, config: RunnableConfig) -> EstadoRH:
 
 
 def rota_apos_triagem(state: EstadoRH) -> str:
-    """Aresta condicional: fora de escopo responde direto; RH segue o fluxo."""
-    return "fora_de_escopo" if state["categoria_triagem"] == "fora_de_escopo" else "rh"
+    """Aresta condicional: direciona para a rota correta após a triagem."""
+    c = state["categoria_triagem"]
+    if c == "fora_de_escopo":
+        return "fora_de_escopo"
+    if c == "conversacional":
+        return "conversacional"
+    return "rh"
+
+
+_SEM_HISTORICO = (
+    "Não encontrei contexto anterior nesta conversa. "
+    "Poderia reformular a pergunta de forma completa?"
+)
+
+
+def resposta_conversacional(state: EstadoRH) -> EstadoRH:
+    """Responde a perguntas de recall do histórico, sem retrieval nem tools.
+
+    Análogo a resposta_direta, mas o contexto é o histórico da conversa: o
+    modelo responde apenas com base no que já foi dito neste thread.
+    Se não houver histórico, retorna resposta fixa sem chamar o modelo.
+    Devolve RespostaRH com fontes vazias e categoria "outro".
+    """
+    mensagens = state.get("mensagens", [])
+    logger.info("[conversacional] historico=%d mensagens", len(mensagens))
+    if not mensagens:
+        return {
+            "resposta": RespostaRH(
+                resposta=_SEM_HISTORICO,
+                fontes=[],
+                categoria="outro",
+                confianca=1.0,
+            )
+        }
+    msg = model.invoke(
+        [
+            SystemMessage(content=SYSTEM_RESPOSTA_CONVERSACIONAL),
+            *mensagens,
+            HumanMessage(content=state["pergunta"]),
+        ]
+    )
+    texto = (msg.content or "").strip()
+    return {
+        "resposta": RespostaRH(
+            resposta=texto,
+            fontes=[],
+            categoria="outro",
+            confianca=1.0,
+        )
+    }
 
 
 def resposta_direta(state: EstadoRH) -> EstadoRH:
@@ -603,6 +704,7 @@ def montar_grafo() -> StateGraph:
     """
     g = StateGraph(EstadoRH)
     g.add_node("triagem", triagem)
+    g.add_node("resposta_conversacional", resposta_conversacional)
     g.add_node("resposta_direta", resposta_direta)
     g.add_node("decidir_rota", decidir_rota)
     g.add_node("contextualizar", contextualizar)
@@ -619,8 +721,13 @@ def montar_grafo() -> StateGraph:
     g.add_conditional_edges(
         "triagem",
         rota_apos_triagem,
-        {"fora_de_escopo": "resposta_direta", "rh": "decidir_rota"},
+        {
+            "fora_de_escopo": "resposta_direta",
+            "conversacional": "resposta_conversacional",
+            "rh": "decidir_rota",
+        },
     )
+    g.add_edge("resposta_conversacional", "finalizar")
     g.add_edge("resposta_direta", "finalizar")
     g.add_conditional_edges(
         "decidir_rota",
