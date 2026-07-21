@@ -51,12 +51,8 @@ def get_langfuse_handler():
         host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
         if secret and public:
             try:
-                from langfuse.callback import CallbackHandler as LangfuseCallbackHandler
-                _langfuse_handler = LangfuseCallbackHandler(
-                    secret_key=secret,
-                    public_key=public,
-                    host=host,
-                )
+                from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
+                _langfuse_handler = LangfuseCallbackHandler()
                 logging.getLogger(__name__).info("LangFuse callback handler inicializado.")
             except Exception as exc:
                 logging.getLogger(__name__).warning(

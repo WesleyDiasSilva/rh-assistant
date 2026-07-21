@@ -915,7 +915,7 @@ def avaliar_groundedness(state: EstadoRH, config: RunnableConfig) -> dict:
     if client:
         try:
             thread_id = config.get("configurable", {}).get("thread_id", "unknown")
-            client.score(
+            client.create_score(
                 name="groundedness",
                 value=score,
                 trace_id=thread_id,
