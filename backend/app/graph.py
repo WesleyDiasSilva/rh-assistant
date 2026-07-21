@@ -44,13 +44,16 @@ ambiente (ver .env / docker-compose.yml).
 from __future__ import annotations
 
 import logging
+import os
 from typing import Annotated, Any, Literal, TypedDict
 
+import numpy as np
 from langchain_anthropic import ChatAnthropic
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
+from langchain_openai import OpenAIEmbeddings
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
@@ -107,6 +110,8 @@ class EstadoRH(TypedDict, total=False):
     resposta_dados: RespostaRH | None     # resultado do ramo de dados
     # Trajetória do turno (acumula por nó via reducer; zerada a cada turno via None)
     trajetoria: Annotated[list[str], _trajetoria_turno]
+    # Avaliação de qualidade: similaridade cosseno entre a resposta e os chunks
+    groundedness_score: float
     # Saída
     resposta: RespostaRH
 
@@ -456,6 +461,42 @@ def _validar_fontes(fontes: list[Fonte], chunks: list[Document]) -> list[Fonte]:
         if f.arquivo in titulos and f.arquivo not in validas:
             validas[f.arquivo] = Fonte(arquivo=f.arquivo, titulo=titulos[f.arquivo] or f.titulo)
     return list(validas.values())
+
+
+# --- Avaliação de groundedness ----------------------------------------------
+
+def _cosseno(a: list[float], b: list[float]) -> float:
+    """Similaridade cosseno entre dois vetores.
+
+    Retorna 0.0 se algum vetor for nulo (norma zero), evitando divisão por zero.
+    """
+    va, vb = np.array(a), np.array(b)
+    norma = np.linalg.norm(va) * np.linalg.norm(vb)
+    return float(np.dot(va, vb) / norma) if norma > 0 else 0.0
+
+
+_langfuse_client = None
+
+
+def _get_langfuse_client():
+    """Retorna o client LangFuse para log de scores, inicializando na primeira chamada.
+
+    Retorna None se as chaves não estiverem configuradas.
+    """
+    global _langfuse_client
+    if _langfuse_client is None:
+        secret = os.getenv("LANGFUSE_SECRET_KEY")
+        public = os.getenv("LANGFUSE_PUBLIC_KEY")
+        host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+        if secret and public:
+            try:
+                from langfuse import Langfuse
+                _langfuse_client = Langfuse(
+                    secret_key=secret, public_key=public, host=host
+                )
+            except Exception as exc:
+                logger.warning("Não foi possível inicializar o client LangFuse: %s", exc)
+    return _langfuse_client
 
 
 # --- Nós --------------------------------------------------------------------
@@ -836,6 +877,54 @@ def validar_fontes(state: EstadoRH) -> EstadoRH:
     return {"resposta": resposta, "trajetoria": ["validar_fontes"]}
 
 
+def avaliar_groundedness(state: EstadoRH) -> dict:
+    """Calcula a similaridade cosseno entre a resposta gerada e os chunks recuperados.
+
+    Embute a resposta e cada chunk, e computa o score como o máximo das
+    similaridades cosseno (resposta vs. cada chunk). Um score alto indica que
+    a resposta está ancorada no material recuperado; baixo sugere deriva ou
+    resposta genérica.
+
+    Só executa para a rota de política (RAG): sem resposta ou sem chunks o
+    score é 0.0 (ex.: rota tool, fora-de-escopo, conversacional). O score é
+    logado no LangFuse como métrica nomeada "groundedness" quando o client
+    estiver configurado.
+    """
+    resposta_obj = state.get("resposta")
+    chunks = state.get("chunks", [])
+    resposta_texto = resposta_obj.resposta if resposta_obj else ""
+
+    if not resposta_texto or not chunks:
+        return {"groundedness_score": 0.0, "trajetoria": ["avaliar_groundedness"]}
+
+    try:
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        textos_chunks = [c.page_content for c in chunks]
+        vecs = embeddings.embed_documents([resposta_texto] + textos_chunks)
+        vec_resposta = vecs[0]
+        scores = [_cosseno(vec_resposta, v) for v in vecs[1:]]
+        score = round(max(scores), 4)
+    except Exception as exc:
+        logger.warning("[groundedness] falha ao calcular score: %s", exc)
+        return {"groundedness_score": 0.0, "trajetoria": ["avaliar_groundedness"]}
+
+    logger.info("[groundedness] score=%.4f pergunta=%r", score, state.get("pergunta", ""))
+
+    # Log explícito no LangFuse como score nomeado na trace da conversa.
+    client = _get_langfuse_client()
+    if client:
+        try:
+            client.score(
+                name="groundedness",
+                value=score,
+                trace_id=state.get("conversa_id", "unknown"),
+            )
+        except Exception as exc:
+            logger.warning("[groundedness] falha ao logar score no LangFuse: %s", exc)
+
+    return {"groundedness_score": score, "trajetoria": ["avaliar_groundedness"]}
+
+
 # Teto de tentativas de auto-correção: uma reescrita basta para tirar o ruído da
 # pergunta; mais que isso vira loop improdutivo. O teto também garante que o
 # ciclo reescrever → recuperar sempre termine.
@@ -947,6 +1036,7 @@ def montar_grafo() -> StateGraph:
     g.add_node("recuperar", recuperar)
     g.add_node("gerar", gerar)
     g.add_node("validar_fontes", validar_fontes)
+    g.add_node("avaliar_groundedness", avaliar_groundedness)
     g.add_node("reescrever", reescrever)
     g.add_node("executar_tools", executar_tools)
     g.add_node("formatar_tool", formatar_tool)
@@ -989,11 +1079,15 @@ def montar_grafo() -> StateGraph:
     g.add_edge("executar_tools", "formatar_tool")
     g.add_edge("formatar_tool", "finalizar")
     # Rota política (RAG): com ciclo de auto-correção opcional.
+    # validar_fontes → avaliar_groundedness → (condicional: reescrever | finalizar)
+    # O score de groundedness é calculado após a validação de fontes, quando os
+    # chunks e a resposta final do turno já estão consolidados no estado.
     g.add_edge("contextualizar", "recuperar")
     g.add_edge("recuperar", "gerar")
     g.add_edge("gerar", "validar_fontes")
+    g.add_edge("validar_fontes", "avaliar_groundedness")
     g.add_conditional_edges(
-        "validar_fontes",
+        "avaliar_groundedness",
         avaliar_resposta,
         {"reescrever": "reescrever", "fim": "finalizar"},
     )
