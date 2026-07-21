@@ -39,7 +39,7 @@ def responder(req: ChatRequest, grafo) -> ChatResponse:
     O grafo compilado é injetado (montado no lifespan com o PostgresSaver), não
     importado como singleton de módulo — a compilação depende do checkpointer.
     """
-    from app.main import get_langfuse_handler
+    from app.main import get_langfuse_handler, get_langfuse_client
     try:
         config: dict = {"configurable": {"thread_id": req.conversa_id}}
         handler = get_langfuse_handler()
@@ -72,6 +72,25 @@ def responder(req: ChatRequest, grafo) -> ChatResponse:
             },
             config=config,
         )
+        # Envia o groundedness score para o LangFuse como métrica nomeada.
+        # handler.last_trace_id contém o UUID que o LangFuse gerou para este
+        # invoke — é o identificador correto para associar o score à trace certa.
+        score = estado_final.get("groundedness_score", 0.0)
+        if score > 0 and handler:
+            trace_id = getattr(handler, "last_trace_id", None)
+            if trace_id:
+                client = get_langfuse_client()
+                if client:
+                    try:
+                        client.create_score(
+                            trace_id=trace_id, name="groundedness", value=score
+                        )
+                    except Exception as exc:
+                        import logging as _log
+                        _log.getLogger(__name__).warning(
+                            "[groundedness] falha ao logar score no LangFuse: %s", exc
+                        )
+
         # Registra o metadado da conversa no primeiro turno (no-op nos demais).
         # Fica na camada de API: título é metadado de produto, não estado do grafo.
         conversas.registrar_se_nova(req.conversa_id, req.pergunta)

@@ -475,28 +475,6 @@ def _cosseno(a: list[float], b: list[float]) -> float:
     return float(np.dot(va, vb) / norma) if norma > 0 else 0.0
 
 
-_langfuse_client = None
-
-
-def _get_langfuse_client():
-    """Retorna o client LangFuse para log de scores, inicializando na primeira chamada.
-
-    Retorna None se as chaves não estiverem configuradas.
-    """
-    global _langfuse_client
-    if _langfuse_client is None:
-        secret = os.getenv("LANGFUSE_SECRET_KEY")
-        public = os.getenv("LANGFUSE_PUBLIC_KEY")
-        host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
-        if secret and public:
-            try:
-                from langfuse import Langfuse
-                _langfuse_client = Langfuse(
-                    secret_key=secret, public_key=public, host=host
-                )
-            except Exception as exc:
-                logger.warning("Não foi possível inicializar o client LangFuse: %s", exc)
-    return _langfuse_client
 
 
 # --- Nós --------------------------------------------------------------------
@@ -909,20 +887,6 @@ def avaliar_groundedness(state: EstadoRH, config: RunnableConfig) -> dict:
         return {"groundedness_score": 0.0, "trajetoria": ["avaliar_groundedness"]}
 
     logger.info("[groundedness] score=%.4f pergunta=%r", score, state.get("pergunta", ""))
-
-    # Log explícito no LangFuse como score nomeado na trace da conversa.
-    client = _get_langfuse_client()
-    if client:
-        try:
-            thread_id = config.get("configurable", {}).get("thread_id", "unknown")
-            client.create_score(
-                name="groundedness",
-                value=score,
-                trace_id=thread_id,
-            )
-        except Exception as exc:
-            logger.warning("[groundedness] falha ao logar score no LangFuse: %s", exc)
-
     return {"groundedness_score": score, "trajetoria": ["avaliar_groundedness"]}
 
 

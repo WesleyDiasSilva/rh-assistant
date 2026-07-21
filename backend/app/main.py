@@ -36,6 +36,7 @@ logging.basicConfig(
 # explicitamente nas invocações do grafo.
 
 _langfuse_handler = None
+_langfuse_client = None
 
 
 def get_langfuse_handler():
@@ -59,6 +60,31 @@ def get_langfuse_handler():
                     "Não foi possível inicializar o LangFuse handler: %s", exc
                 )
     return _langfuse_handler
+
+
+def get_langfuse_client():
+    """Retorna o client LangFuse para operações diretas (ex.: create_score).
+
+    Separado do handler de callback: o handler instrumenta chamadas LangChain,
+    o client é usado para registrar métricas explícitas em traces já criados.
+    """
+    global _langfuse_client
+    if _langfuse_client is None:
+        secret = os.getenv("LANGFUSE_SECRET_KEY")
+        public = os.getenv("LANGFUSE_PUBLIC_KEY")
+        host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+        if secret and public:
+            try:
+                from langfuse import Langfuse
+                _langfuse_client = Langfuse(
+                    secret_key=secret, public_key=public, host=host
+                )
+                logging.getLogger(__name__).info("LangFuse client inicializado.")
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Não foi possível inicializar o client LangFuse: %s", exc
+                )
+    return _langfuse_client
 
 
 @asynccontextmanager
