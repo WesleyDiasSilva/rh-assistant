@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 import psycopg
@@ -27,6 +28,41 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)s:     %(name)s - %(message)s",
 )
+
+# --- LangFuse callback handler (instância global, lazy) ---------------------
+# O LangSmith não requer código de instrumentação explícita: quando
+# LANGCHAIN_TRACING_V2=true e LANGCHAIN_API_KEY estão definidas, o LangChain
+# envia traces automaticamente. O LangFuse exige um callback registrado
+# explicitamente nas invocações do grafo.
+
+_langfuse_handler = None
+
+
+def get_langfuse_handler():
+    """Retorna o handler LangFuse, inicializando na primeira chamada.
+
+    Retorna None se LANGFUSE_SECRET_KEY ou LANGFUSE_PUBLIC_KEY não estiverem
+    configuradas, permitindo que o sistema funcione sem tracing ativo.
+    """
+    global _langfuse_handler
+    if _langfuse_handler is None:
+        secret = os.getenv("LANGFUSE_SECRET_KEY")
+        public = os.getenv("LANGFUSE_PUBLIC_KEY")
+        host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+        if secret and public:
+            try:
+                from langfuse.callback import CallbackHandler as LangfuseCallbackHandler
+                _langfuse_handler = LangfuseCallbackHandler(
+                    secret_key=secret,
+                    public_key=public,
+                    host=host,
+                )
+                logging.getLogger(__name__).info("LangFuse callback handler inicializado.")
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Não foi possível inicializar o LangFuse handler: %s", exc
+                )
+    return _langfuse_handler
 
 
 @asynccontextmanager

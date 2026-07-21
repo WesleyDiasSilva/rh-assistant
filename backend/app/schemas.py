@@ -51,6 +51,12 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Sequência de nós percorridos pelo grafo neste turno.",
     )
+    groundedness_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Similaridade cosseno entre a resposta gerada e os chunks recuperados.",
+    )
 
 
 class DocumentoBase(BaseModel):

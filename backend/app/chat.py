@@ -39,7 +39,13 @@ def responder(req: ChatRequest, grafo) -> ChatResponse:
     O grafo compilado é injetado (montado no lifespan com o PostgresSaver), não
     importado como singleton de módulo — a compilação depende do checkpointer.
     """
+    from app.main import get_langfuse_handler
     try:
+        config: dict = {"configurable": {"thread_id": req.conversa_id}}
+        handler = get_langfuse_handler()
+        if handler:
+            config["callbacks"] = [handler]
+
         estado_final = grafo.invoke(
             {
                 "pergunta": req.pergunta,
@@ -62,8 +68,9 @@ def responder(req: ChatRequest, grafo) -> ChatResponse:
                 "resposta_politica": None,
                 "resposta_dados": None,
                 "trajetoria": None,
+                "groundedness_score": 0.0,
             },
-            config={"configurable": {"thread_id": req.conversa_id}},
+            config=config,
         )
         # Registra o metadado da conversa no primeiro turno (no-op nos demais).
         # Fica na camada de API: título é metadado de produto, não estado do grafo.
@@ -75,6 +82,7 @@ def responder(req: ChatRequest, grafo) -> ChatResponse:
             categoria=r.categoria,
             confianca=r.confianca,
             trajetoria=estado_final.get("trajetoria", []),
+            groundedness_score=estado_final.get("groundedness_score", 0.0),
         )
     except Exception as exc:  # ex.: sem ANTHROPIC_API_KEY, falha de rede/API
         return ChatResponse(
