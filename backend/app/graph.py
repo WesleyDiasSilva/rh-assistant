@@ -877,7 +877,7 @@ def validar_fontes(state: EstadoRH) -> EstadoRH:
     return {"resposta": resposta, "trajetoria": ["validar_fontes"]}
 
 
-def avaliar_groundedness(state: EstadoRH) -> dict:
+def avaliar_groundedness(state: EstadoRH, config: RunnableConfig) -> dict:
     """Calcula a similaridade cosseno entre a resposta gerada e os chunks recuperados.
 
     Embute a resposta e cada chunk, e computa o score como o máximo das
@@ -914,10 +914,11 @@ def avaliar_groundedness(state: EstadoRH) -> dict:
     client = _get_langfuse_client()
     if client:
         try:
+            thread_id = config.get("configurable", {}).get("thread_id", "unknown")
             client.score(
                 name="groundedness",
                 value=score,
-                trace_id=state.get("conversa_id", "unknown"),
+                trace_id=thread_id,
             )
         except Exception as exc:
             logger.warning("[groundedness] falha ao logar score no LangFuse: %s", exc)
