@@ -151,6 +151,7 @@ export default function App() {
           fontes: data.fontes || [],
           categoria: data.categoria,
           confianca: data.confianca,
+          groundedness_score: data.groundedness_score ?? 0,
           trajetoria: data.trajetoria || [],
           ts: Date.now(),
         },
@@ -515,7 +516,11 @@ function Mensagem({ m }) {
           <RenderTexto texto={m.texto} />
           {m.fontes && m.fontes.length > 0 && <Fontes fontes={m.fontes} />}
           {!m.erro && (m.categoria || typeof m.confianca === 'number') && (
-            <MetaResposta categoria={m.categoria} confianca={m.confianca} />
+            <MetaResposta
+              categoria={m.categoria}
+              confianca={m.confianca}
+              groundedness={m.groundedness_score}
+            />
           )}
           {!m.erro && m.trajetoria && m.trajetoria.length > 0 && (
             <Trajetoria nos={m.trajetoria} />
@@ -573,7 +578,7 @@ function formatarCategoria(c) {
   return texto.charAt(0).toUpperCase() + texto.slice(1)
 }
 
-function MetaResposta({ categoria, confianca }) {
+function MetaResposta({ categoria, confianca, groundedness }) {
   const temConfianca = typeof confianca === 'number' && !Number.isNaN(confianca)
   const pct = temConfianca ? Math.round(Math.max(0, Math.min(1, confianca)) * 100) : null
   // Cor da barra por faixa de confiança (neutra, sem alarde).
@@ -583,6 +588,19 @@ function MetaResposta({ categoria, confianca }) {
       : pct >= 70
         ? 'bg-emerald-500'
         : pct >= 40
+          ? 'bg-amber-500'
+          : 'bg-rose-400'
+
+  // Groundedness: exibe apenas quando o score é positivo (rota RAG ativa).
+  const temGroundedness =
+    typeof groundedness === 'number' && !Number.isNaN(groundedness) && groundedness > 0
+  const pctG = temGroundedness ? Math.round(Math.max(0, Math.min(1, groundedness)) * 100) : null
+  const corG =
+    pctG === null
+      ? 'bg-slate-300'
+      : pctG >= 70
+        ? 'bg-teal-500'
+        : pctG >= 40
           ? 'bg-amber-500'
           : 'bg-rose-400'
 
@@ -603,6 +621,18 @@ function MetaResposta({ categoria, confianca }) {
             />
           </span>
           <span className="font-medium text-slate-500">{pct}%</span>
+        </div>
+      )}
+      {temGroundedness && (
+        <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+          <span className="uppercase tracking-wide">Groundedness</span>
+          <span className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-100">
+            <span
+              className={`block h-full rounded-full ${corG}`}
+              style={{ width: `${pctG}%` }}
+            />
+          </span>
+          <span className="font-medium text-slate-500">{pctG}%</span>
         </div>
       )}
     </div>
@@ -1090,6 +1120,7 @@ const COR_NO = {
   recuperar:               'bg-sky-100    text-sky-700    border-sky-200',
   gerar:                   'bg-sky-100    text-sky-700    border-sky-200',
   validar_fontes:          'bg-sky-100    text-sky-700    border-sky-200',
+  avaliar_groundedness:    'bg-teal-100   text-teal-700   border-teal-200',
   reescrever:              'bg-sky-100    text-sky-700    border-sky-200',
   resposta_direta:         'bg-emerald-100 text-emerald-700 border-emerald-200',
   resposta_conversacional: 'bg-emerald-100 text-emerald-700 border-emerald-200',
