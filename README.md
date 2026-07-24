@@ -26,6 +26,18 @@ correspondente.
 - **`aula04-fim`** — refinamento do retrieval: a busca passa a expor o score de
   similaridade nos logs e há um toggle opcional "Reescrever pergunta" que
   normaliza a pergunta (remove ruído) antes de alimentar busca e geração.
+- **`aula05-inicio` / `aula05-fim`** — orquestração do chat migrada para um grafo
+  de estados (LangGraph), com triagem de escopo na entrada e um ciclo de
+  auto-correção que reescreve a consulta quando a busca não traz bons resultados.
+- **`aula06-inicio` / `aula06-fim`** — memória de conversa por thread com
+  checkpointer Postgres: a busca é contextualizada pelo histórico, e a UI ganha
+  navegação lateral com listagem e histórico de conversas.
+- **`aula07-inicio` / `aula07-fim`** — rota conversacional que responde a partir
+  do histórico, decomposição de perguntas híbridas (consulta de dados e busca de
+  política em paralelo) e exibição da trajetória de nós percorrida em cada resposta.
+- **`aula08-inicio` / `aula08-fim`** — observabilidade: instrumentação LangSmith e
+  LangFuse, node de avaliação de groundedness e exibição do score no frontend,
+  com o score vinculado à trace correta na plataforma.
 - **`demonstracao`** — produto de referência completo, com matching por
   palavra-chave sobre os documentos de RH simulados. Não usa LLM nem API key —
   é tudo offline.
