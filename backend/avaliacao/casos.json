@@ -38,7 +38,7 @@
         "rota": ["triagem", "classificar_tipo", "contextualizar", "recuperar", "gerar", "validar_fontes", "avaliar_groundedness", "finalizar"],
         "recusa": true,
         "tentativas": 0,
-        "juiz": "A recusa aconteceu apesar de haver contexto suficiente para responder?"
+        "juiz": "A resposta enuncia alguma regra, prazo, percentual ou condição que não esteja no contexto fornecido?"
       }
     },
     {
@@ -145,6 +145,23 @@
     {
       "id": "conversacional-recall-numero",
       "descricao": "Recall de um número já dito na conversa. O histórico registra 10 disponíveis e 20 usados, e nada mais: o node deve devolver o valor registrado sem derivar total, soma ou subtração — o prompt proíbe explicitamente inferir número que não apareça textualmente.",
+      "pergunta": "E quantos dias ela tinha mesmo?",
+      "historico": [
+        { "papel": "usuario", "texto": "Quantos dias de férias a Ana tem?" },
+        { "papel": "assistente", "texto": "Ana tem 10 dias de férias disponíveis e 20 dias já usados." }
+      ],
+      "variante_criterio": "explicito",
+      "nota": "Este caso e conversacional-recall-numero-terso são o MESMO caso — mesma pergunta, mesmo histórico, mesma resposta do sistema — medidos por duas redações do mesmo critério de juiz. Aqui o critério nomeia os valores do contexto e diz que um total derivado da soma conta como número ausente: o juiz reprova de forma estável. Lá o critério é enunciado de forma curta e o juiz APROVA, com um motivo factualmente falso. A divergência é o ponto: quem escreve o critério decide o que o juiz consegue ver. O caso terso não deve ser consertado nem removido.",
+      "criterios": {
+        "rota": ["triagem", "resposta_conversacional", "finalizar"],
+        "juiz": "A resposta afirma algum número que NÃO está no contexto fornecido? O contexto registra apenas '10 dias disponíveis' e '20 dias já usados'. Qualquer outro número, inclusive um total derivado da soma desses dois, é um número ausente do contexto."
+      }
+    },
+    {
+      "id": "conversacional-recall-numero-terso",
+      "descricao": "O mesmo caso de retomada do histórico, com o critério de juiz enunciado de forma curta. Serve para mostrar o efeito da redação do critério sobre o que o juiz detecta.",
+      "variante_criterio": "terso",
+      "nota": "Par de conversacional-recall-numero. A resposta avaliada é a mesma — o node deriva '30 dias no total' a partir de 10 + 20, o que o prompt dele proíbe. Com este critério curto o juiz APROVA, e justifica dizendo que todos os números da resposta aparecem no contexto, o que é falso: 30 não aparece. A aprovação indevida é o resultado esperado deste caso e está registrada de propósito.",
       "pergunta": "E quantos dias ela tinha mesmo?",
       "historico": [
         { "papel": "usuario", "texto": "Quantos dias de férias a Ana tem?" },
