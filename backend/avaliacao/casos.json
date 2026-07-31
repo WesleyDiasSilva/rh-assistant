@@ -1,4 +1,16 @@
 {
+  "base_esperada": {
+    "_comentario": "Estado da base vetorial que os casos pressupõem. Conferido antes de medir: uma suíte sem estado conhecido não mede nada, porque com um documento a menos o vermelho fica ambíguo entre defeito do sistema e base suja. Reconstruir com limpar_base.py + seed_politicas.py.",
+    "arquivos": [
+      "politica-beneficios.md",
+      "politica-ferias.md",
+      "politica-home-office.md",
+      "politica-horario.md",
+      "politica-licencas.md",
+      "politica-reembolso.md"
+    ],
+    "chunks": 11
+  },
   "casos": [
     {
       "id": "politica-ferias-direito",

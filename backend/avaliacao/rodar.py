@@ -78,14 +78,50 @@ PAPEIS = {"usuario": HumanMessage, "assistente": AIMessage}
 
 # --- Carga dos casos ---------------------------------------------------------
 
-def carregar_casos(path: Path = CASOS_PATH) -> list[dict]:
-    """Lê os casos do arquivo de dados.
+def carregar_dados(path: Path = CASOS_PATH) -> dict:
+    """Lê o arquivo de dados da suíte: os casos e o estado esperado da base.
 
     Os casos são dado, não código: acrescentar um caso é editar o JSON, sem
     tocar no runner.
     """
-    dados = json.loads(path.read_text(encoding="utf-8"))
-    return dados["casos"]
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def carregar_casos(path: Path = CASOS_PATH) -> list[dict]:
+    """Lê apenas a lista de casos."""
+    return carregar_dados(path)["casos"]
+
+
+def verificar_base(esperada: dict) -> list[str]:
+    """Confere o estado da base vetorial contra o declarado em casos.json.
+
+    Uma suíte sem estado conhecido não mede nada: com um documento a menos, a
+    resposta muda e o vermelho fica ambíguo entre defeito do sistema e base
+    suja. Conferir antes de rodar troca esse vermelho ambíguo por uma mensagem
+    que diz o que está errado.
+
+    Devolve a lista de divergências, vazia quando a base está como esperado.
+    """
+    from app import retrieval
+
+    indexados = {d["arquivo"]: d["chunks"] for d in retrieval.listar_documentos()}
+    divergencias: list[str] = []
+
+    esperados = esperada.get("arquivos", [])
+    faltando = [a for a in esperados if a not in indexados]
+    sobrando = [a for a in indexados if a not in esperados]
+    if faltando:
+        divergencias.append(f"arquivos ausentes da base: {faltando}")
+    if sobrando:
+        divergencias.append(f"arquivos a mais na base: {sobrando}")
+
+    chunks_esperados = esperada.get("chunks")
+    chunks_atuais = sum(indexados.values())
+    if chunks_esperados is not None and chunks_atuais != chunks_esperados:
+        divergencias.append(
+            f"chunks: esperado {chunks_esperados}, encontrado {chunks_atuais}"
+        )
+    return divergencias
 
 
 def selecionar(casos: list[dict], caso_id: str | None, rapido: bool) -> list[dict]:
@@ -322,15 +358,41 @@ def parse_args(argv=None):
         "--repeticoes", type=int, default=1,
         help="Executa cada caso N vezes e reporta quantas passaram (expõe oscilação).",
     )
+    p.add_argument(
+        "--ignorar-base", dest="ignorar_base", action="store_true",
+        help="Mede mesmo com a base fora do estado esperado, apenas avisando.",
+    )
     return p.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    casos = selecionar(carregar_casos(), args.caso, args.rapido)
+    dados = carregar_dados()
+    casos = selecionar(dados["casos"], args.caso, args.rapido)
     if not casos:
         print("Nenhum caso corresponde à seleção.")
         return 1
+
+    # Pré-condição: a base tem de estar no estado que os casos pressupõem.
+    base_esperada = dados.get("base_esperada")
+    if base_esperada:
+        divergencias = verificar_base(base_esperada)
+        if divergencias and not args.ignorar_base:
+            print("A base vetorial não está no estado esperado pelos casos:")
+            for d in divergencias:
+                print(f"  {d}")
+            print()
+            print("Reconstrua a base antes de medir:")
+            print("  docker compose exec backend python limpar_base.py")
+            print("  docker compose exec backend python seed_politicas.py")
+            print()
+            print("Ou rode com --ignorar-base para medir mesmo assim (é o que a")
+            print("demonstração de documento removido faz de propósito).")
+            return 1
+        if divergencias:
+            print("AVISO: base fora do estado esperado, medindo mesmo assim:")
+            for d in divergencias:
+                print(f"  {d}")
 
     grafo = compilar_grafo()
 
