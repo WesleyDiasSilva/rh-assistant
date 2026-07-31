@@ -140,6 +140,7 @@
     {
       "id": "hibrida-followup-maiuscula",
       "descricao": "A mesma pergunta do caso anterior, escrita com a pontuação correta de início de frase. A expectativa é idêntica, porque a pergunta é idêntica em significado.",
+      "esperado_vermelho": true,
       "nota": "Este caso e hibrida-followup-minuscula diferem por UM caractere: a inicial da pergunta, maiúscula aqui e minúscula lá. Ambos esperam a rota híbrida. Este reprova de forma reprodutível — o classificador resolve a mesma pergunta como rota de política só por causa da maiúscula. É um caso vermelho intencional: ele documenta a fragilidade em vez de escondê-la.",
       "pergunta": "E ela pode tirar tudo de uma vez?",
       "historico": [
@@ -161,6 +162,7 @@
         { "papel": "assistente", "texto": "Ana tem 10 dias de férias disponíveis e 20 dias já usados." }
       ],
       "rapido": true,
+      "esperado_vermelho": true,
       "variante_criterio": "explicito",
       "nota": "Este caso e conversacional-recall-numero-terso são o MESMO caso — mesma pergunta, mesmo histórico, mesma resposta do sistema — medidos por duas redações do mesmo critério de juiz. Aqui o critério nomeia os valores do contexto e diz que um total derivado da soma conta como número ausente: o juiz reprova de forma estável. Lá o critério é enunciado de forma curta e o juiz APROVA, com um motivo factualmente falso. A divergência é o ponto: quem escreve o critério decide o que o juiz consegue ver. O caso terso não deve ser consertado nem removido.",
       "criterios": {

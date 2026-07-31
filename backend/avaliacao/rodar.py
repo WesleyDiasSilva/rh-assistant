@@ -219,10 +219,33 @@ def passou_caso(vereditos: list[regua.Veredito]) -> bool:
     return all(v.ok for v in vereditos if v.avaliado)
 
 
+def rotular(caso: dict, passou: bool) -> tuple[str, bool]:
+    """Rótulo do resultado e se ele é uma NOTÍCIA (mudou em relação ao declarado).
+
+    Um caso pode declarar `esperado_vermelho`: ele documenta um defeito conhecido
+    do sistema e reprova de propósito. Reprovar não é novidade nesse caso — a
+    novidade seria passar, porque significaria que o defeito descrito deixou de
+    existir e o caso não ensina mais o que diz ensinar.
+
+    É essa distinção que dá sentido ao código de saída: sem ela, uma suíte com
+    vermelho intencional sai com 1 em toda execução e o portão é desligado na
+    primeira semana.
+    """
+    esperado_vermelho = caso.get("esperado_vermelho", False)
+    if passou and esperado_vermelho:
+        return "PASSOU (esperava vermelho)", True
+    if passou:
+        return "PASSOU", False
+    if esperado_vermelho:
+        return "FALHOU (esperado)", False
+    return "FALHOU", True
+
+
 def imprimir_execucao_unica(caso, vereditos, nao_avaliados, estado) -> None:
     """Imprime o resultado de um caso executado uma vez."""
+    rotulo, _ = rotular(caso, passou_caso(vereditos))
     print()
-    print(_cabecalho(caso["id"], "PASSOU" if passou_caso(vereditos) else "FALHOU"))
+    print(_cabecalho(caso["id"], rotulo))
     for v in vereditos:
         marca = "✓" if v.ok else "✗"
         if not v.avaliado:
@@ -245,8 +268,9 @@ def imprimir_repeticoes(caso, rodadas: list[list[regua.Veredito]], nao_avaliados
     """
     total = len(rodadas)
     passaram = sum(1 for vereditos in rodadas if passou_caso(vereditos))
+    marca_esperado = " (vermelho esperado)" if caso.get("esperado_vermelho") else ""
     print()
-    print(_cabecalho(caso["id"], f"{passaram}/{total} passou"))
+    print(_cabecalho(caso["id"], f"{passaram}/{total} passou{marca_esperado}"))
 
     por_criterio: dict[str, list[regua.Veredito]] = {}
     for vereditos in rodadas:
@@ -331,13 +355,31 @@ def main(argv=None) -> int:
             imprimir_execucao_unica(caso, vereditos, nao_avaliados, estado)
             resultados[caso["id"]] = passou_caso(vereditos)
 
+    por_id = {c["id"]: c for c in casos}
     reprovados = [cid for cid, ok in resultados.items() if not ok]
     aprovados = len(casos) - len(reprovados)
+    # Notícia = resultado diferente do declarado no caso: o que era verde
+    # reprovou, ou o vermelho documentado deixou de reprovar. É o que o código
+    # de saída sinaliza.
+    noticias = [cid for cid, ok in resultados.items() if rotular(por_id[cid], ok)[1]]
+    vermelhos_esperados = [
+        cid for cid in reprovados if por_id[cid].get("esperado_vermelho")
+    ]
+
     print()
     print("─" * (COLUNA + 12))
     print(f"{aprovados}/{len(casos)} casos passaram")
-    if reprovados:
-        print(f"reprovados: {', '.join(reprovados)}")
+    if vermelhos_esperados:
+        print(f"vermelhos esperados: {', '.join(vermelhos_esperados)}")
+    inesperados = [cid for cid in reprovados if cid not in vermelhos_esperados]
+    if inesperados:
+        print(f"reprovados: {', '.join(inesperados)}")
+    passou_o_que_devia_falhar = [cid for cid in noticias if resultados[cid]]
+    if passou_o_que_devia_falhar:
+        print(
+            "passaram mas eram vermelho esperado: "
+            f"{', '.join(passou_o_que_devia_falhar)}"
+        )
 
     # Regressão se mede contra a rodada anterior, não contra um número absoluto.
     # Só o modo de execução única alimenta a base: uma rodada com repetições usa
@@ -357,7 +399,7 @@ def main(argv=None) -> int:
         for f in falhas_plataforma[:5]:
             print(f"  {f}")
 
-    return 1 if reprovados else 0
+    return 1 if noticias else 0
 
 
 if __name__ == "__main__":
