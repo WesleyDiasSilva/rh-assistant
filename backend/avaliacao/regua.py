@@ -23,11 +23,18 @@ from app.tools import alerta_teto
 
 
 class Veredito(NamedTuple):
-    """Resultado da aplicação de um critério a um estado final."""
+    """Resultado da aplicação de um critério a um estado final.
+
+    `avaliado=False` marca o critério que não pôde ser medido — por exemplo um
+    juiz indisponível. Ele aparece na saída, mas não entra na conta de
+    passou/falhou: um critério não medido não é um critério reprovado, e também
+    não é um critério aprovado.
+    """
 
     criterio: str
     ok: bool
     detalhe: str
+    avaliado: bool = True
 
 
 # --- Critérios ---------------------------------------------------------------
@@ -164,9 +171,9 @@ def hibrido(estado: dict, esperado: bool) -> Veredito:
     return Veredito("hibrido", False, f"ramos ausentes: {ausentes}")
 
 
-# Critérios que a régua determinística sabe medir. Um critério declarado num
-# caso e ausente daqui é reportado como não avaliado — nunca contado como
-# aprovado no silêncio.
+# Critérios que a régua determinística sabe medir. Quem despacha os critérios de
+# um caso confere esta tabela: um critério declarado e não reconhecido por
+# ninguém é reportado como não avaliado, nunca contado como aprovado no silêncio.
 CRITERIOS = {
     "rota": rota,
     "fontes": fontes,
@@ -178,15 +185,14 @@ CRITERIOS = {
 }
 
 
-def avaliar(estado: dict, criterios: dict[str, Any]) -> tuple[list[Veredito], list[str]]:
-    """Aplica ao estado final os critérios declarados no caso.
+def avaliar(estado: dict, criterios: dict[str, Any]) -> list[Veredito]:
+    """Aplica ao estado final os critérios declarados no caso que a régua mede.
 
-    Devolve os vereditos e os nomes dos critérios que nenhuma função sabe medir.
+    Critérios que não estão em CRITERIOS são ignorados aqui — cabe a quem chama
+    despachá-los (o juiz, por exemplo) ou reportá-los como não avaliados.
     """
-    vereditos = [
+    return [
         CRITERIOS[nome](estado, esperado)
         for nome, esperado in criterios.items()
         if nome in CRITERIOS
     ]
-    nao_avaliados = [nome for nome in criterios if nome not in CRITERIOS]
-    return vereditos, nao_avaliados

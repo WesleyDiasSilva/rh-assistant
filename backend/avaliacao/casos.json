@@ -37,7 +37,8 @@
       "criterios": {
         "rota": ["triagem", "classificar_tipo", "contextualizar", "recuperar", "gerar", "validar_fontes", "avaliar_groundedness", "finalizar"],
         "recusa": true,
-        "tentativas": 0
+        "tentativas": 0,
+        "juiz": "A recusa aconteceu apesar de haver contexto suficiente para responder?"
       }
     },
     {
@@ -112,8 +113,24 @@
       }
     },
     {
-      "id": "hibrida-followup-fracionamento",
-      "descricao": "Follow-up sobre a regra, com o saldo já respondido no histórico. O classificador resolve como híbrida pela própria regra de desempate do prompt (dúvida entre política e híbrida resolve em híbrida).",
+      "id": "hibrida-followup-minuscula",
+      "descricao": "Follow-up sobre a regra de fracionamento, com o saldo já respondido no histórico. Responder bem exige o dado (10 dias de saldo) e a regra (um período precisa ter ao menos 14 dias), então a rota esperada é a híbrida.",
+      "nota": "Este caso e hibrida-followup-maiuscula diferem por UM caractere: a inicial da pergunta, minúscula aqui e maiúscula lá. Ambos esperam a rota híbrida. Este passa e o outro não — a classificação do tipo de consulta é sensível à capitalização da primeira letra. A fragilidade é do grafo e fica registrada aqui de propósito: nem a entrada é normalizada, nem o critério é afrouxado para acomodá-la.",
+      "pergunta": "e ela pode tirar tudo de uma vez?",
+      "historico": [
+        { "papel": "usuario", "texto": "Quantos dias de férias a Ana tem?" },
+        { "papel": "assistente", "texto": "Ana tem 10 dias de férias disponíveis e 20 dias já usados." }
+      ],
+      "criterios": {
+        "rota": ["triagem", "classificar_tipo", "iniciar_hibrido", "sub_dados", "sub_politica", "mesclar", "finalizar"],
+        "hibrido": true,
+        "fontes": ["politica-ferias.md"]
+      }
+    },
+    {
+      "id": "hibrida-followup-maiuscula",
+      "descricao": "A mesma pergunta do caso anterior, escrita com a pontuação correta de início de frase. A expectativa é idêntica, porque a pergunta é idêntica em significado.",
+      "nota": "Este caso e hibrida-followup-minuscula diferem por UM caractere: a inicial da pergunta, maiúscula aqui e minúscula lá. Ambos esperam a rota híbrida. Este reprova de forma reprodutível — o classificador resolve a mesma pergunta como rota de política só por causa da maiúscula. É um caso vermelho intencional: ele documenta a fragilidade em vez de escondê-la.",
       "pergunta": "E ela pode tirar tudo de uma vez?",
       "historico": [
         { "papel": "usuario", "texto": "Quantos dias de férias a Ana tem?" },
@@ -135,7 +152,7 @@
       ],
       "criterios": {
         "rota": ["triagem", "resposta_conversacional", "finalizar"],
-        "juiz": "A resposta afirma algum número que NÃO está no histórico da conversa? O histórico registra apenas '10 dias disponíveis' e '20 dias já usados'. Qualquer outro número (por exemplo um total derivado da soma) é um número ausente do histórico."
+        "juiz": "A resposta afirma algum número que não aparece no contexto fornecido?"
       }
     }
   ]

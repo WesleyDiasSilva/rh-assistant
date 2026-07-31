@@ -1,9 +1,11 @@
 """Runner da suíte de avaliação do assistente de RH.
 
 Carrega os casos de avaliacao/casos.json, invoca o grafo uma vez por caso e
-confronta o estado final com o gabarito declarado no caso (ver avaliacao/regua.py).
-Não há framework de teste envolvido: um caso é um dicionário de dados e a suíte
-é um laço sobre eles.
+confronta o estado final com o gabarito declarado no caso: os critérios com
+gabarito vão para a régua determinística (avaliacao/regua.py) e o que só se
+julga lendo o texto da resposta vai para o juiz (avaliacao/juiz.py). Não há
+framework de teste envolvido: um caso é um dicionário de dados e a suíte é um
+laço sobre eles.
 
 O grafo é compilado SEM checkpointer. Quando um caso precisa de memória de
 conversa, o histórico é declarado no próprio caso e entra pelo estado inicial —
@@ -28,7 +30,12 @@ from pathlib import Path
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.graph import compilar_grafo
-from avaliacao import regua
+from avaliacao import juiz, regua
+
+# Critérios que alguém sabe medir: os determinísticos da régua e o do juiz. Um
+# critério declarado num caso e ausente daqui aparece na saída como não
+# avaliado, para não passar por aprovado no silêncio.
+RECONHECIDOS = set(regua.CRITERIOS) | {juiz.CRITERIO}
 
 CASOS_PATH = Path(__file__).resolve().parent / "casos.json"
 
@@ -103,17 +110,23 @@ def executar(grafo, caso: dict, repeticao: int = 0) -> dict:
 
 
 def avaliar_caso(grafo, caso: dict, repeticao: int = 0):
-    """Executa um caso e aplica a régua. Devolve (vereditos, nao_avaliados, estado).
+    """Executa um caso e aplica os critérios. Devolve (vereditos, nao_avaliados, estado).
 
     Erro na invocação vira um veredito reprovado, para uma exceção não passar
     por caso aprovado nem derrubar a suíte inteira.
     """
+    criterios = caso.get("criterios", {})
     try:
         estado = executar(grafo, caso, repeticao)
     except Exception as exc:
         falha = regua.Veredito("execucao", False, f"{type(exc).__name__}: {exc}")
         return [falha], [], None
-    vereditos, nao_avaliados = regua.avaliar(estado, caso.get("criterios", {}))
+    vereditos = regua.avaliar(estado, criterios)
+    # O juiz roda depois da régua, mas não recebe o resultado dela: saber que os
+    # critérios determinísticos passaram o inclinaria a concordar com eles.
+    if juiz.CRITERIO in criterios:
+        vereditos.append(juiz.avaliar(caso, estado, criterios[juiz.CRITERIO]))
+    nao_avaliados = [nome for nome in criterios if nome not in RECONHECIDOS]
     return vereditos, nao_avaliados, estado
 
 
@@ -124,13 +137,23 @@ def _cabecalho(nome: str, veredito: str) -> str:
     return f"{nome} {'.' * max(3, COLUNA - len(nome))} {veredito}"
 
 
+def passou_caso(vereditos: list[regua.Veredito]) -> bool:
+    """Um caso passa quando todo critério EFETIVAMENTE MEDIDO foi aprovado.
+
+    Critério não avaliado (juiz indisponível) não reprova o caso: a suíte não
+    acusa defeito no sistema por causa de um problema do avaliador.
+    """
+    return all(v.ok for v in vereditos if v.avaliado)
+
+
 def imprimir_execucao_unica(caso, vereditos, nao_avaliados, estado) -> None:
     """Imprime o resultado de um caso executado uma vez."""
-    passou = all(v.ok for v in vereditos)
     print()
-    print(_cabecalho(caso["id"], "PASSOU" if passou else "FALHOU"))
+    print(_cabecalho(caso["id"], "PASSOU" if passou_caso(vereditos) else "FALHOU"))
     for v in vereditos:
         marca = "✓" if v.ok else "✗"
+        if not v.avaliado:
+            marca = "·"
         print(f"  {marca} {v.criterio:<13}{v.detalhe}")
     for nome in nao_avaliados:
         print(f"  · {nome:<13}(nenhum critério registrado — não avaliado)")
@@ -141,22 +164,50 @@ def imprimir_execucao_unica(caso, vereditos, nao_avaliados, estado) -> None:
 
 
 def imprimir_repeticoes(caso, rodadas: list[list[regua.Veredito]], nao_avaliados) -> None:
-    """Imprime o resultado agregado de um caso executado N vezes."""
+    """Imprime o resultado agregado de um caso executado N vezes.
+
+    Relata todo critério que reprovou em alguma rodada, distinguindo o que
+    reprova sempre do que OSCILOU entre rodadas — um critério que muda de
+    veredito com a mesma entrada é informação, não ruído a ser suprimido.
+    """
     total = len(rodadas)
-    passaram = sum(1 for vereditos in rodadas if all(v.ok for v in vereditos))
+    passaram = sum(1 for vereditos in rodadas if passou_caso(vereditos))
     print()
     print(_cabecalho(caso["id"], f"{passaram}/{total} passou"))
-    # Só os critérios que reprovaram em alguma rodada, com a contagem: é o que
-    # identifica qual critério oscila.
-    falhas: dict[str, list[str]] = {}
+
+    por_criterio: dict[str, list[regua.Veredito]] = {}
     for vereditos in rodadas:
         for v in vereditos:
-            if not v.ok:
-                falhas.setdefault(v.criterio, []).append(v.detalhe)
-    if not falhas:
+            por_criterio.setdefault(v.criterio, []).append(v)
+
+    if passaram == total:
         print(f"  ✓ {'todos':<13}{total} de {total} rodadas com todos os critérios aprovados")
-    for criterio, detalhes in falhas.items():
-        print(f"  ✗ {criterio:<13}({len(detalhes)} de {total}) {detalhes[0]}")
+
+    for criterio, vs in por_criterio.items():
+        nao_medidos = [v for v in vs if not v.avaliado]
+        if nao_medidos:
+            print(f"  · {criterio:<13}não avaliado em {len(nao_medidos)} de {total} rodadas")
+            for detalhe in sorted({v.detalhe for v in nao_medidos}):
+                print(f"      {detalhe}")
+        medidos = [v for v in vs if v.avaliado]
+        resultados = {v.ok for v in medidos}
+        if not medidos or resultados == {True}:
+            continue  # nada medido, ou estável e aprovado: nada a relatar
+        reprovas = sum(1 for v in medidos if not v.ok)
+        oscilou = len(resultados) > 1
+        marca = "!" if oscilou else "✗"
+        rotulo = (
+            f"OSCILOU — {reprovas} de {len(medidos)} rodadas medidas reprovaram"
+            if oscilou
+            else f"({reprovas} de {len(medidos)})"
+        )
+        print(f"  {marca} {criterio:<13}{rotulo}")
+        # Justificativas distintas: num critério que oscilou, é a comparação
+        # entre elas que mostra o que mudou de uma rodada para a outra.
+        vistos = {f"[{'aprovado' if v.ok else 'reprovado'}] {v.detalhe}" for v in medidos}
+        for detalhe in sorted(vistos):
+            print(f"      {detalhe}")
+
     for nome in nao_avaliados:
         print(f"  · {nome:<13}(nenhum critério registrado — não avaliado)")
 
@@ -197,12 +248,12 @@ def main(argv=None) -> int:
                 vereditos, nao_avaliados, _ = avaliar_caso(grafo, caso, repeticao=i)
                 rodadas.append(vereditos)
             imprimir_repeticoes(caso, rodadas, nao_avaliados)
-            if not all(all(v.ok for v in r) for r in rodadas):
+            if not all(passou_caso(r) for r in rodadas):
                 reprovados.append(caso["id"])
         else:
             vereditos, nao_avaliados, estado = avaliar_caso(grafo, caso)
             imprimir_execucao_unica(caso, vereditos, nao_avaliados, estado)
-            if not all(v.ok for v in vereditos):
+            if not passou_caso(vereditos):
                 reprovados.append(caso["id"])
 
     aprovados = len(casos) - len(reprovados)
