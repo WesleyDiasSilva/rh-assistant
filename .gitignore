@@ -26,5 +26,8 @@ dist/
 # Dados gerados em runtime
 solicitacoes.jsonl
 
+# Última rodada da suíte de avaliação (base de comparação do delta, local)
+.ultima-rodada.json
+
 # Material de apoio (não versionar)
 aula.md

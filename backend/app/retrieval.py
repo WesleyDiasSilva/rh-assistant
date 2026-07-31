@@ -11,6 +11,7 @@ tem o melhor custo/qualidade.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from langchain_core.documents import Document
@@ -51,7 +52,11 @@ COLLECTION_NAME = "politicas"
 # Quantos chunks a busca retorna. Trade-off do top-k: poucos chunks podem perder
 # a passagem certa (recall baixo); muitos trazem ruído e gastam contexto/tokens
 # na geração. 4 cobre bem perguntas que cruzam 1-2 seções de política.
-TOP_K = 4
+#
+# Configurável por ambiente (TOP_K) para permitir variar o parâmetro sem editar
+# código — útil para medir o efeito do top-k sobre a qualidade das respostas. O
+# default preserva o comportamento anterior.
+TOP_K = int(os.getenv("TOP_K", "4"))
 
 _splitter = RecursiveCharacterTextSplitter(
     chunk_size=CHUNK_SIZE,

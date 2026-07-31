@@ -3,6 +3,7 @@
     {
       "id": "politica-ferias-direito",
       "descricao": "Regra de férias. A base diz 30 dias corridos após 12 meses, na política de férias.",
+      "rapido": true,
       "pergunta": "Quantos dias de férias tenho direito por ano?",
       "criterios": {
         "rota": ["triagem", "classificar_tipo", "contextualizar", "recuperar", "gerar", "validar_fontes", "avaliar_groundedness", "finalizar"],
@@ -13,6 +14,7 @@
     {
       "id": "politica-home-office-dias",
       "descricao": "Regra de home office. A base diz até 2 dias por semana, na política de home office.",
+      "rapido": true,
       "pergunta": "Quantos dias por semana posso trabalhar de casa?",
       "criterios": {
         "rota": ["triagem", "classificar_tipo", "contextualizar", "recuperar", "gerar", "validar_fontes", "avaliar_groundedness", "finalizar"],
@@ -33,6 +35,7 @@
     {
       "id": "recusa-assunto-fora-da-base",
       "descricao": "Participação nos lucros não é tratada por nenhuma das políticas indexadas. Recusar é o comportamento correto: sem fonte para citar, a lista fica vazia.",
+      "rapido": true,
       "pergunta": "Qual é a política de participação nos lucros e resultados (PLR)?",
       "criterios": {
         "rota": ["triagem", "classificar_tipo", "contextualizar", "recuperar", "gerar", "validar_fontes", "avaliar_groundedness", "finalizar"],
@@ -88,6 +91,7 @@
     {
       "id": "tool-teto-elaine",
       "descricao": "O cadastro da Elaine tem 65 dias e o teto da política é 30. Com validar_teto ligado, o sistema sinaliza a inconsistência sem depender do modelo.",
+      "rapido": true,
       "pergunta": "Quantos dias de férias a Elaine tem?",
       "entradas": {
         "validar_teto": true
@@ -150,6 +154,7 @@
         { "papel": "usuario", "texto": "Quantos dias de férias a Ana tem?" },
         { "papel": "assistente", "texto": "Ana tem 10 dias de férias disponíveis e 20 dias já usados." }
       ],
+      "rapido": true,
       "variante_criterio": "explicito",
       "nota": "Este caso e conversacional-recall-numero-terso são o MESMO caso — mesma pergunta, mesmo histórico, mesma resposta do sistema — medidos por duas redações do mesmo critério de juiz. Aqui o critério nomeia os valores do contexto e diz que um total derivado da soma conta como número ausente: o juiz reprova de forma estável. Lá o critério é enunciado de forma curta e o juiz APROVA, com um motivo factualmente falso. A divergência é o ponto: quem escreve o critério decide o que o juiz consegue ver. O caso terso não deve ser consertado nem removido.",
       "criterios": {
