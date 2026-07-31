@@ -1,0 +1,14 @@
+{
+  "casos": [
+    {
+      "id": "politica-ferias-direito",
+      "descricao": "Pergunta informativa sobre a regra de férias. Deve percorrer a rota de política (RAG) e se ancorar na política de férias.",
+      "pergunta": "Quantos dias de férias tenho direito por ano?"
+    },
+    {
+      "id": "tool-saldo-ana",
+      "descricao": "Consulta de dado individual de funcionário. Deve acionar a ferramenta de saldo em vez de explicar a política.",
+      "pergunta": "Quantos dias de férias a Ana tem?"
+    }
+  ]
+}
