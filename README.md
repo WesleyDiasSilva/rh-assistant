@@ -38,6 +38,11 @@ correspondente.
 - **`aula08-inicio` / `aula08-fim`** — observabilidade: instrumentação LangSmith e
   LangFuse, node de avaliação de groundedness e exibição do score no frontend,
   com o score vinculado à trace correta na plataforma.
+- **`aula09-inicio` / `aula09-fim`** — suíte de avaliação automatizada em
+  `backend/avaliacao/`: casos declarados em `casos.json`, régua de critérios
+  determinísticos, critério julgado por modelo, pré-condição do estado da base,
+  modo rápido, comparação com a rodada anterior e envio dos vereditos como
+  scores no LangFuse.
 - **`demonstracao`** — produto de referência completo, com matching por
   palavra-chave sobre os documentos de RH simulados. Não usa LLM nem API key —
   é tudo offline.
@@ -77,3 +82,53 @@ docker compose exec backend python seed_politicas.py
 ```
 
 Requer `OPENAI_API_KEY` no `.env` (os embeddings são gerados pela OpenAI).
+
+Quantos chunks a busca retorna é controlado por `TOP_K` (default 4). Serve para
+medir o efeito do parâmetro sem editar código:
+
+```bash
+docker compose exec -e TOP_K=1 backend python -m avaliacao.rodar --rapido
+```
+
+## Suíte de avaliação
+
+`backend/avaliacao/` mede o comportamento do grafo contra casos declarados em
+`casos.json`. Não usa framework de teste: um caso é um dicionário de dados e a
+suíte é um laço sobre eles, invocando o grafo compilado sem checkpointer.
+
+```bash
+# Suíte completa (~1min20s).
+docker compose exec backend python -m avaliacao.rodar
+
+# Conjunto de demonstração, 5 casos (~30s).
+docker compose exec backend python -m avaliacao.rodar --rapido
+
+# Um caso, repetido, para expor oscilação.
+docker compose exec backend python -m avaliacao.rodar --caso tool-saldo-ana --repeticoes 5
+```
+
+Cada caso declara seus critérios. Os determinísticos são medidos por funções
+puras, sem chamar modelo (`regua.py`): a rota percorrida, as políticas citadas,
+o conteúdo que a resposta precisa afirmar, a ferramenta escolhida, os
+contadores, o alerta de teto. O que só se julga lendo o texto vai para um
+critério julgado por modelo (`juiz.py`), com veredito binário e justificativa.
+
+O score de groundedness é sempre reportado e nunca decide passou/falhou: é uma
+similaridade cosseno, cega a negação e zerada fora da rota de política.
+
+Dois casos declaram `esperado_vermelho`: reprovam de propósito, documentando
+comportamentos conhecidos do sistema. O código de saída sinaliza *mudança* em
+relação ao declarado — caso verde que reprovou, ou vermelho esperado que passou.
+
+Antes de medir, o runner confere se a base vetorial está no estado que os casos
+pressupõem e recusa rodar se não estiver, porque com um documento a menos o
+vermelho fica ambíguo entre defeito do sistema e base suja. Use `--ignorar-base`
+para medir mesmo assim.
+
+Ao fim de cada rodada o resultado é comparado com o da rodada anterior
+(`delta: 12/14 → 9/14, 3 regressões`). A base de comparação fica em
+`avaliacao/.ultima-rodada.json`, fora do git.
+
+Com as chaves do LangFuse no ambiente, cada caso gera uma trace nomeada com o id
+do caso e recebe dois scores, `regua` e `juiz`, com a justificativa do juiz no
+comentário. Sem as chaves, a suíte roda igual.
