@@ -2,13 +2,141 @@
   "casos": [
     {
       "id": "politica-ferias-direito",
-      "descricao": "Pergunta informativa sobre a regra de férias. Deve percorrer a rota de política (RAG) e se ancorar na política de férias.",
-      "pergunta": "Quantos dias de férias tenho direito por ano?"
+      "descricao": "Regra de férias. A base diz 30 dias corridos após 12 meses, na política de férias.",
+      "pergunta": "Quantos dias de férias tenho direito por ano?",
+      "criterios": {
+        "rota": ["triagem", "classificar_tipo", "contextualizar", "recuperar", "gerar", "validar_fontes", "avaliar_groundedness", "finalizar"],
+        "fontes": ["politica-ferias.md"],
+        "tentativas": 0
+      }
+    },
+    {
+      "id": "politica-home-office-dias",
+      "descricao": "Regra de home office. A base diz até 2 dias por semana, na política de home office.",
+      "pergunta": "Quantos dias por semana posso trabalhar de casa?",
+      "criterios": {
+        "rota": ["triagem", "classificar_tipo", "contextualizar", "recuperar", "gerar", "validar_fontes", "avaliar_groundedness", "finalizar"],
+        "fontes": ["politica-home-office.md"],
+        "tentativas": 0
+      }
+    },
+    {
+      "id": "politica-licenca-paternidade",
+      "descricao": "Regra de licença. A base diz 20 dias corridos, na política de licenças.",
+      "pergunta": "Quantos dias tem a licença-paternidade?",
+      "criterios": {
+        "rota": ["triagem", "classificar_tipo", "contextualizar", "recuperar", "gerar", "validar_fontes", "avaliar_groundedness", "finalizar"],
+        "fontes": ["politica-licencas.md"],
+        "tentativas": 0
+      }
+    },
+    {
+      "id": "recusa-assunto-fora-da-base",
+      "descricao": "Participação nos lucros não é tratada por nenhuma das políticas indexadas. Recusar é o comportamento correto: sem fonte para citar, a lista fica vazia.",
+      "pergunta": "Qual é a política de participação nos lucros e resultados (PLR)?",
+      "criterios": {
+        "rota": ["triagem", "classificar_tipo", "contextualizar", "recuperar", "gerar", "validar_fontes", "avaliar_groundedness", "finalizar"],
+        "recusa": true,
+        "tentativas": 0
+      }
+    },
+    {
+      "id": "auto-correcao-assunto-fora-da-base",
+      "descricao": "Mesmo assunto ausente da base, agora com auto-correção ligada. A reescrita da consulta não inventa cobertura que não existe: uma tentativa é feita e a recusa se mantém.",
+      "pergunta": "Qual é a política de participação nos lucros e resultados (PLR)?",
+      "entradas": {
+        "auto_corrigir": true
+      },
+      "criterios": {
+        "rota": ["contextualizar", "recuperar", "gerar", "avaliar_groundedness", "reescrever", "recuperar", "gerar", "finalizar"],
+        "recusa": true,
+        "tentativas": 1
+      }
+    },
+    {
+      "id": "fora-de-escopo-saudacao",
+      "descricao": "Saudação. A triagem desvia antes de gastar retrieval ou ferramenta.",
+      "pergunta": "Oi, tudo bem?",
+      "criterios": {
+        "rota": ["triagem", "resposta_direta", "finalizar"],
+        "fontes": []
+      }
+    },
+    {
+      "id": "fora-de-escopo-clima",
+      "descricao": "Assunto alheio ao trabalho. Mesma rota da saudação: resposta direta, sem base.",
+      "pergunta": "Qual a previsão do tempo para amanhã?",
+      "criterios": {
+        "rota": ["triagem", "resposta_direta", "finalizar"],
+        "fontes": []
+      }
     },
     {
       "id": "tool-saldo-ana",
-      "descricao": "Consulta de dado individual de funcionário. Deve acionar a ferramenta de saldo em vez de explicar a política.",
-      "pergunta": "Quantos dias de férias a Ana tem?"
+      "descricao": "Dado individual de funcionário. Deve acionar a ferramenta de saldo e não citar política.",
+      "pergunta": "Quantos dias de férias a Ana tem?",
+      "criterios": {
+        "rota": ["triagem", "classificar_tipo", "decidir_rota", "executar_tools", "formatar_tool", "finalizar"],
+        "tool": {
+          "name": "consultar_saldo_ferias",
+          "args": { "funcionario": "Ana" }
+        },
+        "fontes": []
+      }
+    },
+    {
+      "id": "tool-teto-elaine",
+      "descricao": "O cadastro da Elaine tem 65 dias e o teto da política é 30. Com validar_teto ligado, o sistema sinaliza a inconsistência sem depender do modelo.",
+      "pergunta": "Quantos dias de férias a Elaine tem?",
+      "entradas": {
+        "validar_teto": true
+      },
+      "criterios": {
+        "rota": ["triagem", "classificar_tipo", "decidir_rota", "executar_tools", "formatar_tool", "finalizar"],
+        "tool": {
+          "name": "consultar_saldo_ferias",
+          "args": { "funcionario": "Elaine" }
+        },
+        "teto": "Elaine",
+        "fontes": []
+      }
+    },
+    {
+      "id": "hibrida-saldo-e-parcelamento",
+      "descricao": "Pergunta que exige dado individual e regra ao mesmo tempo. Os dois ramos correm em paralelo e convergem em mesclar; as fontes vêm só do ramo de política.",
+      "pergunta": "Quantos dias a Ana tem e qual a regra para parcelar as férias?",
+      "criterios": {
+        "rota": ["triagem", "classificar_tipo", "iniciar_hibrido", "sub_dados", "sub_politica", "mesclar", "finalizar"],
+        "hibrido": true,
+        "fontes": ["politica-ferias.md"]
+      }
+    },
+    {
+      "id": "hibrida-followup-fracionamento",
+      "descricao": "Follow-up sobre a regra, com o saldo já respondido no histórico. O classificador resolve como híbrida pela própria regra de desempate do prompt (dúvida entre política e híbrida resolve em híbrida).",
+      "pergunta": "E ela pode tirar tudo de uma vez?",
+      "historico": [
+        { "papel": "usuario", "texto": "Quantos dias de férias a Ana tem?" },
+        { "papel": "assistente", "texto": "Ana tem 10 dias de férias disponíveis e 20 dias já usados." }
+      ],
+      "criterios": {
+        "rota": ["triagem", "classificar_tipo", "iniciar_hibrido", "sub_dados", "sub_politica", "mesclar", "finalizar"],
+        "hibrido": true,
+        "fontes": ["politica-ferias.md"]
+      }
+    },
+    {
+      "id": "conversacional-recall-numero",
+      "descricao": "Recall de um número já dito na conversa. O histórico registra 10 disponíveis e 20 usados, e nada mais: o node deve devolver o valor registrado sem derivar total, soma ou subtração — o prompt proíbe explicitamente inferir número que não apareça textualmente.",
+      "pergunta": "E quantos dias ela tinha mesmo?",
+      "historico": [
+        { "papel": "usuario", "texto": "Quantos dias de férias a Ana tem?" },
+        { "papel": "assistente", "texto": "Ana tem 10 dias de férias disponíveis e 20 dias já usados." }
+      ],
+      "criterios": {
+        "rota": ["triagem", "resposta_conversacional", "finalizar"],
+        "juiz": "A resposta afirma algum número que NÃO está no histórico da conversa? O histórico registra apenas '10 dias disponíveis' e '20 dias já usados'. Qualquer outro número (por exemplo um total derivado da soma) é um número ausente do histórico."
+      }
     }
   ]
 }
