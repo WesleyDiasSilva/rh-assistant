@@ -35,7 +35,7 @@ from pathlib import Path
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.graph import compilar_grafo
-from avaliacao import juiz, regua
+from avaliacao import juiz, plataforma, regua
 
 # Critérios que alguém sabe medir: os determinísticos da régua e o do juiz. Um
 # critério declarado num caso e ausente daqui aparece na saída como não
@@ -166,13 +166,17 @@ def estado_inicial(caso: dict) -> dict:
 
 def executar(grafo, caso: dict, repeticao: int = 0) -> dict:
     """Invoca o grafo para um caso e devolve o estado final completo."""
-    return grafo.invoke(
-        estado_inicial(caso),
+    config: dict = {
         # thread_id por caso e repetição: sem checkpointer ele é ignorado, mas
         # mantém o config no mesmo formato usado em produção e garante que uma
         # repetição nunca herde estado de outra.
-        config={"configurable": {"thread_id": f"avaliacao-{caso['id']}-{repeticao}"}},
-    )
+        "configurable": {"thread_id": f"avaliacao-{caso['id']}-{repeticao}"},
+    }
+    callbacks = plataforma.callbacks()
+    if callbacks:
+        config["callbacks"] = callbacks
+        config["metadata"] = plataforma.atributos_trace(caso["id"])
+    return grafo.invoke(estado_inicial(caso), config=config)
 
 
 def avaliar_caso(grafo, caso: dict, repeticao: int = 0):
@@ -187,12 +191,15 @@ def avaliar_caso(grafo, caso: dict, repeticao: int = 0):
     except Exception as exc:
         falha = regua.Veredito("execucao", False, f"{type(exc).__name__}: {exc}")
         return [falha], [], None
+    # Lido imediatamente após o invoke, enquanto ainda corresponde a este caso.
+    trace_id = plataforma.trace_id_recente()
     vereditos = regua.avaliar(estado, criterios)
     # O juiz roda depois da régua, mas não recebe o resultado dela: saber que os
     # critérios determinísticos passaram o inclinaria a concordar com eles.
     if juiz.CRITERIO in criterios:
         vereditos.append(juiz.avaliar(caso, estado, criterios[juiz.CRITERIO]))
     nao_avaliados = [nome for nome in criterios if nome not in RECONHECIDOS]
+    plataforma.enviar_scores(trace_id, caso["id"], vereditos)
     return vereditos, nao_avaliados, estado
 
 
@@ -306,6 +313,8 @@ def main(argv=None) -> int:
     escopo = "conjunto rápido" if args.rapido else f"{len(casos)} casos"
     sufixo = f" × {args.repeticoes} repetições" if args.repeticoes > 1 else ""
     print(f"Suíte de avaliação — {escopo}{sufixo}")
+    if plataforma.disponivel():
+        print(f"LangFuse: enviando traces e scores | sessão {plataforma.RODADA_ID}")
 
     resultados: dict[str, bool] = {}
     for caso in casos:
@@ -338,6 +347,15 @@ def main(argv=None) -> int:
     imprimir_delta(anterior, resultados)
     if args.repeticoes == 1:
         gravar_ultima(anterior, resultados)
+
+    # Flush obrigatório: o SDK envia em lote e o processo terminaria antes.
+    # Falha de envio é reportada e não altera o código de saída — a plataforma
+    # é destino do resultado, não parte do critério.
+    falhas_plataforma = plataforma.finalizar()
+    if falhas_plataforma:
+        print(f"LangFuse: {len(falhas_plataforma)} falha(s) de envio")
+        for f in falhas_plataforma[:5]:
+            print(f"  {f}")
 
     return 1 if reprovados else 0
 
