@@ -6,6 +6,7 @@
       "rapido": true,
       "pergunta": "Quantos dias de férias tenho direito por ano?",
       "criterios": {
+        "contem": ["30 dias"],
         "rota": ["triagem", "classificar_tipo", "contextualizar", "recuperar", "gerar", "validar_fontes", "avaliar_groundedness", "finalizar"],
         "fontes": ["politica-ferias.md"],
         "tentativas": 0
@@ -17,6 +18,7 @@
       "rapido": true,
       "pergunta": "Quantos dias por semana posso trabalhar de casa?",
       "criterios": {
+        "contem": ["2 dias"],
         "rota": ["triagem", "classificar_tipo", "contextualizar", "recuperar", "gerar", "validar_fontes", "avaliar_groundedness", "finalizar"],
         "fontes": ["politica-home-office.md"],
         "tentativas": 0
@@ -27,6 +29,7 @@
       "descricao": "Regra de licença. A base diz 20 dias corridos, na política de licenças.",
       "pergunta": "Quantos dias tem a licença-paternidade?",
       "criterios": {
+        "contem": ["20 dias"],
         "rota": ["triagem", "classificar_tipo", "contextualizar", "recuperar", "gerar", "validar_fontes", "avaliar_groundedness", "finalizar"],
         "fontes": ["politica-licencas.md"],
         "tentativas": 0
@@ -80,6 +83,7 @@
       "descricao": "Dado individual de funcionário. Deve acionar a ferramenta de saldo e não citar política.",
       "pergunta": "Quantos dias de férias a Ana tem?",
       "criterios": {
+        "contem": ["10 dias"],
         "rota": ["triagem", "classificar_tipo", "decidir_rota", "executar_tools", "formatar_tool", "finalizar"],
         "tool": {
           "name": "consultar_saldo_ferias",
@@ -97,6 +101,7 @@
         "validar_teto": true
       },
       "criterios": {
+        "contem": ["65 dias", "30 dias"],
         "rota": ["triagem", "classificar_tipo", "decidir_rota", "executar_tools", "formatar_tool", "finalizar"],
         "tool": {
           "name": "consultar_saldo_ferias",
@@ -111,6 +116,7 @@
       "descricao": "Pergunta que exige dado individual e regra ao mesmo tempo. Os dois ramos correm em paralelo e convergem em mesclar; as fontes vêm só do ramo de política.",
       "pergunta": "Quantos dias a Ana tem e qual a regra para parcelar as férias?",
       "criterios": {
+        "contem": ["10 dias", "14"],
         "rota": ["triagem", "classificar_tipo", "iniciar_hibrido", "sub_dados", "sub_politica", "mesclar", "finalizar"],
         "hibrido": true,
         "fontes": ["politica-ferias.md"]

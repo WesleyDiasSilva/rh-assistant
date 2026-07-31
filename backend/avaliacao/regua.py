@@ -84,6 +84,25 @@ def fontes(estado: dict, esperado: list[str]) -> Veredito:
     return Veredito("fontes", False, "; ".join(partes))
 
 
+def contem(estado: dict, esperado: list[str]) -> Veredito:
+    """O texto da resposta contém os trechos que uma resposta correta precisa ter.
+
+    Existe porque os demais critérios medem o CAMINHO — a rota percorrida, a
+    política citada, a ferramenta escolhida — e não o CONTEÚDO. Sem este, uma
+    resposta que cita a política de férias e afirma "15 dias" passa por todos os
+    outros critérios: a fonte certa é um proxy de correção, não correção.
+
+    Os trechos esperados vêm do gabarito da base (o número que a política de
+    fato registra), não da resposta observada. Comparação sem diferenciar
+    maiúsculas, porque a caixa do texto não é o que se afirma.
+    """
+    texto = estado["resposta"].resposta.lower()
+    faltando = [t for t in esperado if t.lower() not in texto]
+    if not faltando:
+        return Veredito("contem", True, ", ".join(esperado))
+    return Veredito("contem", False, f"não afirma {faltando}")
+
+
 def recusa(estado: dict, esperado: bool) -> Veredito:
     """A resposta não se sustentou na base, e por isso não cita fonte alguma.
 
@@ -177,6 +196,7 @@ def hibrido(estado: dict, esperado: bool) -> Veredito:
 CRITERIOS = {
     "rota": rota,
     "fontes": fontes,
+    "contem": contem,
     "recusa": recusa,
     "tool": tool,
     "tentativas": tentativas,
