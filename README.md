@@ -43,6 +43,9 @@ correspondente.
   determinísticos, critério julgado por modelo, pré-condição do estado da base,
   modo rápido, comparação com a rodada anterior e envio dos vereditos como
   scores no LangFuse.
+- **`aula10-inicio` / `aula10-fim`** — o modelo de embedding passa a ser
+  registrado na metadata de cada chunk, e o boot avisa quando o modelo
+  configurado diverge do que gerou os vetores da base.
 - **`demonstracao`** — produto de referência completo, com matching por
   palavra-chave sobre os documentos de RH simulados. Não usa LLM nem API key —
   é tudo offline.
@@ -82,6 +85,16 @@ docker compose exec backend python seed_politicas.py
 ```
 
 Requer `OPENAI_API_KEY` no `.env` (os embeddings são gerados pela OpenAI).
+
+Cada chunk registra em sua metadata o modelo de embedding que gerou o seu vetor.
+Trocar esse modelo não é mudança de configuração: cada modelo projeta o texto num
+espaço próprio, e distância entre vetores de espaços diferentes não mede
+semelhança. Quando as dimensões divergem, a operação falha de forma explícita;
+quando coincidem, a busca continua rodando e passa a devolver os documentos
+errados sem sinal nenhum. Por isso o boot confere o modelo registrado nos chunks
+contra o configurado e **avisa no log** quando divergem — não bloqueia, porque
+reindexar é decisão de quem opera. Para resolver, reconstrua a base com
+`limpar_base.py` + `seed_politicas.py`.
 
 Quantos chunks a busca retorna é controlado por `TOP_K` (default 4). Serve para
 medir o efeito do parâmetro sem editar código:

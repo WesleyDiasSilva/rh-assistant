@@ -32,6 +32,18 @@ FAKE_DATA_DIR = Path(__file__).resolve().parent.parent / "fake_data"
 # de política; o "large" só se justificaria com acervo grande e buscas sutis.
 EMBEDDING_MODEL = "text-embedding-3-small"
 
+# Chave sob a qual o modelo que gerou o vetor fica registrado na metadata de
+# cada chunk.
+#
+# Trocar o modelo de embedding não é uma mudança de configuração: cada modelo
+# projeta o texto num espaço próprio, e distância entre vetores de espaços
+# diferentes não mede semelhança. Quando as dimensões divergem a operação falha
+# de forma explícita; quando coincidem, a busca continua rodando e passa a
+# devolver os documentos errados sem sinal nenhum. Registrar o modelo por chunk
+# torna essa dependência inspecionável — é o que permite verificar_modelo_base()
+# detectar a divergência em vez de descobri-la pelo resultado.
+MODELO_EMBEDDING_META = "modelo_embedding"
+
 # Tamanho do chunk em caracteres. Trade-off: chunks grandes preservam contexto
 # mas diluem a relevância (a similaridade fica "borrada" e o top-k traz texto
 # irrelevante junto); chunks pequenos são mais precisos mas fragmentam a ideia.
@@ -92,6 +104,11 @@ def indexar_documento(texto: str, metadados: dict) -> int:
     IDs estáveis (arquivo + índice do chunk) tornam a indexação idempotente:
     reexecutar com o mesmo conteúdo faz upsert sobre os mesmos IDs, sem duplicar.
 
+    Cada chunk grava também o modelo que gerou o seu vetor (ver
+    MODELO_EMBEDDING_META): sem esse registro, um vetor é um vetor — não há como
+    saber depois em que espaço ele foi calculado, e a base fica com uma
+    dependência que ninguém consegue inspecionar.
+
     Retorna quantos chunks foram criados.
     """
     arquivo = metadados.get("arquivo")
@@ -106,7 +123,10 @@ def indexar_documento(texto: str, metadados: dict) -> int:
         arquivo, len(texto), len(pedacos),
     )
     documentos = [
-        Document(page_content=pedaco, metadata={**metadados, "chunk": i})
+        Document(
+            page_content=pedaco,
+            metadata={**metadados, "chunk": i, MODELO_EMBEDDING_META: EMBEDDING_MODEL},
+        )
         for i, pedaco in enumerate(pedacos)
     ]
     ids = [f"{arquivo}::chunk-{i}" for i in range(len(documentos))]
@@ -213,6 +233,61 @@ def listar_documentos() -> list[dict]:
         ]
     except Exception:
         return []
+
+
+def modelos_na_base() -> dict[str | None, int]:
+    """Conta os chunks indexados por modelo de embedding que os gerou.
+
+    A chave None agrupa os chunks gravados antes de este registro existir: eles
+    têm vetor, mas não dizem de onde ele veio. Retorna {} se a base ainda não
+    existe.
+    """
+    sql = (
+        "SELECT e.cmetadata->>%s AS modelo, count(*) AS chunks "
+        "FROM langchain_pg_embedding e "
+        "JOIN langchain_pg_collection c ON c.uuid = e.collection_id "
+        "WHERE c.name = %s "
+        "GROUP BY modelo"
+    )
+    try:
+        with psycopg.connect(db.get_dsn(), connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (MODELO_EMBEDDING_META, COLLECTION_NAME))
+                return {modelo: chunks for modelo, chunks in cur.fetchall()}
+    except Exception:
+        return {}
+
+
+def verificar_modelo_base() -> list[str]:
+    """Confronta o modelo configurado com o que de fato gerou os vetores da base.
+
+    Devolve a lista de divergências, vazia quando a base está coerente. Base
+    vazia não é divergência: não há vetor para ficar órfão.
+
+    A verificação é barata (uma agregação sobre a metadata) e roda no boot, que
+    é o último momento em que ainda dá para perceber a inconsistência antes de
+    a primeira busca devolver um resultado plausível e errado.
+    """
+    contagem = modelos_na_base()
+    if not contagem:
+        return []
+
+    divergencias: list[str] = []
+    nao_registrados = contagem.get(None, 0)
+    if nao_registrados:
+        divergencias.append(
+            f"{nao_registrados} chunk(s) sem modelo de embedding registrado "
+            f"(indexados antes deste registro existir) — reindexe para saber "
+            f"em que espaço eles foram calculados"
+        )
+    for modelo, chunks in sorted(contagem.items(), key=lambda item: item[0] or ""):
+        if modelo is not None and modelo != EMBEDDING_MODEL:
+            divergencias.append(
+                f"{chunks} chunk(s) gerados por '{modelo}', mas o modelo "
+                f"configurado agora é '{EMBEDDING_MODEL}' — a busca compara "
+                f"vetores de espaços diferentes; reindexe a base"
+            )
+    return divergencias
 
 
 def remover_documento(arquivo: str) -> int:

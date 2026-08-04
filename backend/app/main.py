@@ -96,6 +96,16 @@ async def lifespan(app: FastAPI):
     # e pré-existente, mesmo padrão da extensão pgvector acima.
     db.garantir_tabela_conversas()
 
+    # A base vetorial depende do modelo que gerou os seus vetores, e essa
+    # dependência não aparece em lugar nenhum do código: trocar o modelo sem
+    # reindexar deixa a busca comparando vetores de espaços diferentes, o que
+    # não levanta erro quando as dimensões coincidem. O boot é o último momento
+    # em que ainda dá para avisar antes da primeira busca silenciosamente
+    # errada. Só avisa — não bloqueia: reindexar é decisão de quem opera, e
+    # derrubar a aplicação por isso trocaria um resultado ruim por indisponibilidade.
+    for divergencia in retrieval.verificar_modelo_base():
+        logging.getLogger(__name__).warning("[base vetorial] %s", divergencia)
+
     # Checkpointer da memória de conversa: uma conexão psycopg v3 dedicada,
     # mantida viva por toda a aplicação. O PostgresSaver precisa de conexão
     # persistente — from_conn_string com `with` fecharia a conexão por request.
