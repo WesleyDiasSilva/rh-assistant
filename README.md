@@ -175,6 +175,69 @@ docker compose exec backend python -m avaliacao.rodar
 A primeira rodada depois de um `down -v` não imprime delta (`sem rodada anterior
 para comparar`): a base de comparação é local e foi junto com o volume.
 
+### O que cada caso mede
+
+Rodar a suíte devolve um placar, mas o placar sozinho não diz onde o sistema
+quebrou. Cada caso isola um comportamento diferente — é isso que transforma um
+vermelho em diagnóstico.
+
+**Rota de política — recuperação e ancoragem** (`politica-ferias-direito`,
+`politica-home-office-dias`, `politica-licenca-paternidade`; os dois primeiros
+no conjunto rápido). Percorrem o caminho completo de recuperação e verificam
+três coisas separadas: a rota percorrida, a política citada e **o conteúdo que a
+resposta afirma**. Os dois primeiros critérios são proxy — uma resposta pode
+citar a política certa e afirmar o número errado, e é por isso que o critério de
+conteúdo existe sozinho. São três casos porque um acerto isolado pode ser
+coincidência de recuperação.
+
+**Recusa — o "não sei" engenheirado** (`recusa-assunto-fora-da-base`, no rápido).
+Pergunta sobre assunto que nenhuma política cobre. O comportamento correto é
+recusar com a lista de fontes vazia, e não inventar cobertura. O critério de
+juiz complementa a régua: verifica se a resposta enunciou alguma regra, prazo ou
+percentual que não estava no contexto.
+
+**Recusa sob auto-correção** (`auto-correcao-assunto-fora-da-base`). O mesmo
+assunto ausente, agora com a reescrita de consulta ligada. Mede que reescrever a
+pergunta **não fabrica cobertura inexistente**: uma tentativa é feita e a recusa
+se mantém.
+
+**Triagem de escopo** (`fora-de-escopo-saudacao`, `fora-de-escopo-clima`).
+Saudação e assunto alheio ao trabalho. Medem que a decisão de entrada desvia
+antes de gastar recuperação ou ferramenta — o critério de fontes vazias é o
+sinal de que o caminho caro não foi percorrido.
+
+**Rota de ferramenta** (`tool-saldo-ana`, `tool-teto-elaine`; o segundo no
+rápido). Dado individual deve acionar a ferramenta e não citar política. O caso
+do teto mede algo diferente e mais importante: o cadastro contém um valor que
+excede o limite da política, e o alerta é produzido **por código**, não pelo
+modelo. É o teste de que a regra de negócio não foi delegada.
+
+**Rota híbrida** (`hibrida-saldo-e-parcelamento`, `hibrida-followup-minuscula`,
+`hibrida-followup-maiuscula`). Perguntas que exigem dado individual e regra ao
+mesmo tempo: os dois ramos correm em paralelo e convergem. O terceiro é a mesma
+pergunta do segundo, mudando apenas a pontuação de início de frase — e está
+declarado como **vermelho esperado** porque a classificação muda com isso. Ele
+documenta uma fragilidade conhecida em vez de escondê-la.
+
+**Recall na conversa** (`conversacional-recall-numero` — no rápido e declarado
+vermelho — e `conversacional-recall-numero-terso`). O histórico registra dois
+números e nada mais; a resposta deriva um total somando os dois, o que o prompt
+proíbe. Os dois casos são idênticos em pergunta, histórico e resposta: o que
+muda é **a redação do critério de juiz**. Com o critério explícito o juiz
+reprova; com o critério curto ele aprova, e justifica com um motivo factualmente
+falso. O par existe para tornar visível que quem escreve o critério decide o que
+o juiz consegue enxergar. Nenhum dos dois deve ser "consertado".
+
+#### Por que `TOP_K` derruba uns casos e outros não
+
+Zerando a recuperação, apenas os casos de política reprovam. Não é acaso: são os
+únicos que dependem de trazer documento. A recusa já opera sem fonte, a rota de
+ferramenta não usa recuperação e o recall responde a partir do histórico.
+
+É essa a diferença entre um placar e um diagnóstico — a suíte não informa apenas
+que algo quebrou, mas **onde**. Uma queda restrita aos casos de política aponta
+para recuperação; uma queda generalizada aponta para outra coisa.
+
 ### Roteiro de execução
 
 Sequência para verificar o estado da suíte e observar o efeito de `TOP_K` sobre o
