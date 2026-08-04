@@ -145,3 +145,72 @@ Ao fim de cada rodada o resultado é comparado com o da rodada anterior
 Com as chaves do LangFuse no ambiente, cada caso gera uma trace nomeada com o id
 do caso e recebe dois scores, `regua` e `juiz`, com a justificativa do juiz no
 comentário. Sem as chaves, a suíte roda igual.
+
+### Partindo do zero
+
+Quando não há nada de pé — máquina nova, volume antigo ou estado desconhecido.
+Descarta o volume do Postgres, então a base vetorial e o histórico de conversas
+são recriados vazios.
+
+```bash
+# Derruba tudo, inclusive o volume do banco.
+docker compose down -v
+
+# Credenciais (só na primeira vez). Requer ANTHROPIC_API_KEY (geração) e
+# OPENAI_API_KEY (embeddings); as chaves de observabilidade são opcionais.
+cp .env.example .env
+
+# Sobe reconstruindo as imagens. O boot cria a extensão pgvector e as tabelas.
+docker compose up -d --build
+
+# Indexa as políticas na base recém-criada.
+# Esperado: "Total: 6 arquivos, 11 chunks."
+docker compose exec backend python seed_politicas.py
+
+# Confere que a suíte roda contra esse estado.
+# Esperado: 12/14, dois vermelhos declarados, saída 0.
+docker compose exec backend python -m avaliacao.rodar
+```
+
+A primeira rodada depois de um `down -v` não imprime delta (`sem rodada anterior
+para comparar`): a base de comparação é local e foi junto com o volume.
+
+### Roteiro de execução
+
+Sequência para verificar o estado da suíte e observar o efeito de `TOP_K` sobre o
+resultado, partindo de um ambiente que já existe. Todos os comandos rodam na raiz
+do projeto; o código de saída de cada rodada é lido com `echo $?`.
+
+```bash
+# 1. Sobe a stack. Aguarde http://localhost:8000/health devolver {"status":"ok","db":"ok"}.
+docker compose up -d
+
+# 2. Reconstrói a base vetorial no estado que os casos pressupõem.
+#    Esperado ao fim do seed: "Total: 6 arquivos, 11 chunks."
+docker compose exec backend python limpar_base.py
+docker compose exec backend python seed_politicas.py
+
+# 3. Suíte completa (~1min20s). Esperado: 12/14, os dois vermelhos declarados
+#    (hibrida-followup-maiuscula e conversacional-recall-numero) e saída 0.
+docker compose exec backend python -m avaliacao.rodar
+
+# 4. Conjunto rápido (~30s). Esperado: 4/5, um vermelho declarado
+#    (conversacional-recall-numero) e saída 0.
+docker compose exec backend python -m avaliacao.rodar --rapido
+
+# 5. Mesmo conjunto com o retrieval reduzido a um chunk. Nesta base o resultado
+#    não muda (4/5, saída 0): os casos de política se resolvem com o primeiro
+#    chunk recuperado, então o parâmetro cai sem que a medição acuse nada.
+docker compose exec -e TOP_K=1 backend python -m avaliacao.rodar --rapido
+
+# 6. Com o retrieval zerado, os dois casos de política reprovam por falta de
+#    contexto. Esperado: 2/5, "delta: 4/5 → 2/5, 2 regressões" e saída 1 — é a
+#    divergência em relação ao declarado que muda o código de saída, não o
+#    número de vermelhos.
+docker compose exec -e TOP_K=0 backend python -m avaliacao.rodar --rapido
+
+# 7. Volta ao valor default e restaura a base de comparação, para a próxima
+#    rodada não abrir com um delta herdado do passo anterior. Esperado: 4/5,
+#    0 regressões, saída 0.
+docker compose exec backend python -m avaliacao.rodar --rapido
+```
